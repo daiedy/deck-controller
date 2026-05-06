@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.deck-controller.doc-review</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/stralstsou/Documents/github/deck-controller/scripts/doc-review.sh</string>
+    </array>
+
+    <!-- Every 2 days = 172800 seconds -->
+    <key>StartInterval</key>
+    <integer>172800</integer>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/stralstsou/Documents/github/deck-controller</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/stralstsou/Documents/github/deck-controller/docs/.reviews/launchd-doc-review.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/stralstsou/Documents/github/deck-controller/docs/.reviews/launchd-doc-review-error.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/stralstsou</string>
+    </dict>
+</dict>
+</plist>

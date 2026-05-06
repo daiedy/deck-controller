@@ -116,6 +116,14 @@ Number sequentially after the last ADR in `docs/ADR/`.
 - `Makefile` → build/deploy commands
 - `defaults/defaults.json` → default config values
 
+## Local Automation
+
+This agent is invoked automatically every 2 days by `scripts/doc-review.sh` via GitHub Copilot CLI (`gh copilot --autopilot`). The schedule is managed by macOS launchd — see `scripts/launchd/com.deck-controller.doc-review.plist`.
+
+To install/manage: `./scripts/setup-automation.sh install|status|uninstall`
+
+Reports are saved to `docs/.reviews/doc-review-*.md`.
+
 ## Rules
 
 - Never document features that don't exist in code yet.

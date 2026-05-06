@@ -8,3 +8,8 @@ __pycache__/
 .DS_Store
 *.zip
 py_modules/
+
+# Local review automation outputs
+docs/.reviews/logs/
+docs/.reviews/*-output.log
+docs/.reviews/launchd-*.log
