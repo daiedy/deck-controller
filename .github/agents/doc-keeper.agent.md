@@ -8,12 +8,43 @@ These files must be kept accurate and up to date:
 
 | File | Tracks |
 |------|--------|
-| `README.md` | Features, config options, installation steps, architecture overview |
+| `README.md` | Features, quick start, config, architecture diagram (human-friendly!) |
 | `docs/ARCHITECTURE.md` | Component diagram, data flow, tech stack, state machine |
 | `docs/BLUETOOTH.md` | Protocol details, HID descriptor layout, platform compatibility |
 | `docs/STEAMOS.md` | SteamOS constraints, workarounds, file paths |
 | `docs/DEVELOPMENT.md` | Setup instructions, project structure tree, build commands |
 | `docs/ADR/` | Architecture Decision Records for significant design choices |
+| **GitHub Wiki** | Synced via `scripts/wiki-sync.sh` after doc updates |
+
+## README Style Guidelines
+
+The README.md is the **public face** of the project. It must be:
+
+- **Written for humans**, not robots — friendly, clear, engaging tone
+- **Visual**: use emojis for section headers, tables with icons, badges at the top
+- **Scannable**: short paragraphs, bullet points, clear headings
+- **Action-oriented**: "Quick Start" section gets users going in 5 steps
+- **NOT dry technical docs** — save deep details for docs/ files
+
+README structure (maintain this order):
+1. Title + badges + one-liner description
+2. Short engaging paragraph (what + why)
+3. Platform support badges
+4. Features table (with emoji column)
+5. Quick Start (5 steps max)
+6. How It Works (diagram + short pipeline description)
+7. Platform Support table
+8. Installation (plugin store + manual)
+9. Configuration (simple table, no Type column)
+10. Limitations (brief)
+11. Documentation links table
+12. License + footer
+
+**Mermaid diagrams** — keep them simple:
+- Use `\n` for line breaks in labels, NOT `<br/>`
+- Do NOT put `()` in edge labels (breaks GitHub parser)
+- Do NOT use special characters in edge labels
+- Keep node labels short (2-3 words)
 
 ## Update Workflow
 

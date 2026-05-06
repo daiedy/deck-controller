@@ -104,3 +104,9 @@ fi
 # --- Cleanup old reports (keep last 20) ---
 ls -t "$REVIEWS_DIR"/doc-review-*.md 2>/dev/null | tail -n +21 | xargs rm -f 2>/dev/null || true
 ls -t "$REVIEWS_DIR"/doc-review-*-output.log 2>/dev/null | tail -n +21 | xargs rm -f 2>/dev/null || true
+
+# --- Trigger wiki sync after successful doc update ---
+if [ $EXIT_CODE -eq 0 ] && [ -x "$REPO_DIR/scripts/wiki-sync.sh" ]; then
+  echo "[$(date)] Triggering wiki sync..."
+  "$REPO_DIR/scripts/wiki-sync.sh" || echo "[$(date)] Wiki sync failed (non-fatal)"
+fi

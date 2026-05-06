@@ -120,6 +120,10 @@ run_now() {
       echo "Running code review now..."
       "$SCRIPT_DIR/code-review.sh"
       ;;
+    wiki)
+      echo "Running wiki sync now..."
+      "$SCRIPT_DIR/wiki-sync.sh"
+      ;;
     all|*)
       echo "Running all reviews..."
       "$SCRIPT_DIR/doc-review.sh"
@@ -134,11 +138,11 @@ case "${1:-help}" in
   status)     status ;;
   run)        run_now "$@" ;;
   *)
-    echo "Usage: $0 {install|uninstall|status|run [doc|code|all]}"
+    echo "Usage: $0 {install|uninstall|status|run [doc|code|wiki|all]}"
     echo ""
     echo "  install   — Install launchd jobs + verify Copilot CLI"
     echo "  uninstall — Remove launchd jobs"
     echo "  status    — Show job status + recent reports"
-    echo "  run       — Run reviews immediately (doc/code/all)"
+    echo "  run       — Run reviews immediately (doc/code/wiki/all)"
     ;;
 esac
