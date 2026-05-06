@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<record>
+  <!-- Service Class ID List: HID -->
+  <attribute id="0x0001">
+    <sequence>
+      <uuid value="0x1124" /> <!-- HumanInterfaceDeviceService -->
+    </sequence>
+  </attribute>
+
+  <!-- Protocol Descriptor List: L2CAP + HIDP -->
+  <attribute id="0x0004">
+    <sequence>
+      <sequence>
+        <uuid value="0x0100" /> <!-- L2CAP -->
+        <uint16 value="0x0011" /> <!-- PSM 17: HID Control -->
+      </sequence>
+      <sequence>
+        <uuid value="0x0011" /> <!-- HIDP -->
+      </sequence>
+    </sequence>
+  </attribute>
+
+  <!-- Browse Group List -->
+  <attribute id="0x0005">
+    <sequence>
+      <uuid value="0x1002" /> <!-- PublicBrowseGroup -->
+    </sequence>
+  </attribute>
+
+  <!-- Language Base Attribute ID List -->
+  <attribute id="0x0006">
+    <sequence>
+      <uint16 value="0x656E" /> <!-- en -->
+      <uint16 value="0x006A" /> <!-- UTF-8 -->
+      <uint16 value="0x0100" /> <!-- base -->
+    </sequence>
+  </attribute>
+
+  <!-- Bluetooth Profile Descriptor List -->
+  <attribute id="0x0009">
+    <sequence>
+      <sequence>
+        <uuid value="0x1124" /> <!-- HID -->
+        <uint16 value="0x0101" /> <!-- Version 1.1 -->
+      </sequence>
+    </sequence>
+  </attribute>
+
+  <!-- Additional Protocol Descriptor List (Interrupt channel) -->
+  <attribute id="0x000D">
+    <sequence>
+      <sequence>
+        <sequence>
+          <uuid value="0x0100" /> <!-- L2CAP -->
+          <uint16 value="0x0013" /> <!-- PSM 19: HID Interrupt -->
+        </sequence>
+        <sequence>
+          <uuid value="0x0011" /> <!-- HIDP -->
+        </sequence>
+      </sequence>
+    </sequence>
+  </attribute>
+
+  <!-- Service Name -->
+  <attribute id="0x0100">
+    <text value="Deck Controller" />
+  </attribute>
+
+  <!-- Service Description -->
+  <attribute id="0x0101">
+    <text value="Bluetooth HID Gamepad" />
+  </attribute>
+
+  <!-- Service Provider -->
+  <attribute id="0x0102">
+    <text value="daiedy" />
+  </attribute>
+
+  <!-- HID Parser Version -->
+  <attribute id="0x0201">
+    <uint16 value="0x0111" /> <!-- 1.1.1 -->
+  </attribute>
+
+  <!-- HID Device Subclass: Gamepad -->
+  <attribute id="0x0202">
+    <uint8 value="0x08" />
+  </attribute>
+
+  <!-- HID Country Code: Not localized -->
+  <attribute id="0x0203">
+    <uint8 value="0x00" />
+  </attribute>
+
+  <!-- HID Virtual Cable -->
+  <attribute id="0x0204">
+    <boolean value="true" />
+  </attribute>
+
+  <!-- HID Reconnect Initiate -->
+  <attribute id="0x0205">
+    <boolean value="true" />
+  </attribute>
+
+  <!-- HID Descriptor List -->
+  <attribute id="0x0206">
+    <sequence>
+      <sequence>
+        <uint8 value="0x22" /> <!-- Report Descriptor type -->
+        <!-- HID Report Descriptor: loaded dynamically from hid_descriptor.py -->
+        <text encoding="hex"
+              value="05010905a1018501050919012910150025017501951081020501093009310932093516008026ff7f751095048102050209c509c4150026ff0075089502810205010939150025073500463b016514750495018142750495018103c0" />
+      </sequence>
+    </sequence>
+  </attribute>
+
+  <!-- HID LANGID Base List -->
+  <attribute id="0x0207">
+    <sequence>
+      <sequence>
+        <uint16 value="0x0409" /> <!-- English (US) -->
+        <uint16 value="0x0100" /> <!-- Bluetooth base -->
+      </sequence>
+    </sequence>
+  </attribute>
+
+  <!-- HID Battery Power -->
+  <attribute id="0x0209">
+    <boolean value="true" />
+  </attribute>
+
+  <!-- HID Remote Wake -->
+  <attribute id="0x020A">
+    <boolean value="true" />
+  </attribute>
+
+  <!-- HID Supervision Timeout -->
+  <attribute id="0x020C">
+    <uint16 value="0x0C80" /> <!-- 3200 -->
+  </attribute>
+
+  <!-- HID Normally Connectable -->
+  <attribute id="0x020D">
+    <boolean value="true" />
+  </attribute>
+
+  <!-- HID Boot Device -->
+  <attribute id="0x020E">
+    <boolean value="false" />
+  </attribute>
+
+  <!-- HID SSR Host Max Latency -->
+  <attribute id="0x020F">
+    <uint16 value="0x0640" /> <!-- 1600 -->
+  </attribute>
+
+  <!-- HID SSR Host Min Timeout -->
+  <attribute id="0x0210">
+    <uint16 value="0x0320" /> <!-- 800 -->
+  </attribute>
+</record>

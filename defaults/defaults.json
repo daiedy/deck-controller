@@ -1,0 +1,10 @@
+{
+  "controller_name": "Deck Controller",
+  "auto_connect": false,
+  "polling_rate_hz": 250,
+  "deadzone": 0.05,
+  "enable_gyro": false,
+  "enable_trackpads": false,
+  "bt_device_class": "0x002508",
+  "max_connections": 1
+}

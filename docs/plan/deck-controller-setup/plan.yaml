@@ -1,0 +1,1060 @@
+plan_id: deck-controller-setup
+objective: |
+  Set up the deck-controller repository — a DeckyLoader plugin that turns Steam Deck
+  into a Bluetooth HID gamepad controller for PC, Android, and iOS/macOS. Create all
+  project scaffolding, backend (Python BT HID), frontend (React/TSX), documentation,
+  CI/CD, and agent/skill infrastructure.
+created_at: "2026-05-06"
+created_by: gem-planner
+status: pending
+research_confidence: high
+
+plan_metrics:
+  wave_1_task_count: 6
+  total_dependencies: 14
+  risk_score: medium
+
+tldr: |
+  38 files across 6 waves. Wave 1 bootstraps all config/scaffolding (6 parallel tasks).
+  Wave 2 builds core backend (BT HID, input reader, HID descriptor) and frontend shell.
+  Wave 3 wires frontend components to backend RPC. Wave 4 adds CI/CD and docs.
+  Wave 5 creates GitHub agents/skills. Wave 6 adds README with full architecture.
+  Critical risk: BlueZ D-Bus and L2CAP require _root flag and SteamOS-specific paths.
+
+open_questions:
+  - question: "Which SDP service record UUID to use for HID gamepad?"
+    context: "Standard HID UUID is 0x0011, but iOS requires specific SDP attributes"
+    type: research
+    affects: [backend-bt-hid, assets-sdp]
+  - question: "Does SteamOS immutable fs allow installing dbus-python system-wide?"
+    context: "SteamOS uses read-only rootfs; may need bundled deps"
+    type: decision_blocker
+    affects: [backend-bt-hid, docs-steamos]
+
+gaps: []
+
+pre_mortem:
+  overall_risk_level: medium
+  critical_failure_modes:
+    - scenario: "BlueZ D-Bus API unavailable or restricted on SteamOS"
+      likelihood: medium
+      impact: critical
+      mitigation: "Test on actual Steam Deck early; fallback to bluetoothctl subprocess"
+    - scenario: "L2CAP sockets require CAP_NET_ADMIN not available to plugin"
+      likelihood: medium
+      impact: high
+      mitigation: "_root flag in plugin.json grants root; verify capability set"
+    - scenario: "iOS refuses pairing without specific SDP attributes"
+      likelihood: high
+      impact: medium
+      mitigation: "Use known-good SDP record from open-source BT HID projects (btkb, bluetooth_hid)"
+  assumptions:
+    - "DeckyLoader v2.5+ with api_version 1 is the target"
+    - "SteamOS 3.x with BlueZ 5.x and Linux kernel 6.x"
+    - "_root flag provides sufficient permissions for raw BT sockets"
+    - "evdev can read Steam Deck built-in gamepad at /dev/input/event*"
+    - "pnpm v9 is used for frontend package management"
+
+implementation_specification:
+  code_structure: |
+    Root: DeckyLoader plugin standard layout (main.py, src/, plugin.json, package.json)
+    Backend: main.py orchestrates backend/ modules (bt_hid_service, input_reader, hid_descriptor, config)
+    Frontend: src/index.tsx entry → components (MainView, DeviceList, Settings) + hooks (useBackend)
+    Assets: SDP XML record + default config JSON
+    Docs: Architecture, development, BT protocol, SteamOS constraints, ADRs
+    CI: GitHub Actions for build validation and release packaging
+  affected_areas:
+    - "Repository root (all scaffolding files)"
+    - "backend/ (Python BT HID modules)"
+    - "src/ (React frontend)"
+    - "assets/ + defaults/ (static resources)"
+    - "docs/ (documentation)"
+    - ".github/ (CI, agents, skills, templates)"
+  component_details:
+    - component: "Plugin Entry (main.py)"
+      responsibility: "DeckyLoader lifecycle; delegates to backend modules"
+      interfaces: ["callable RPC methods for frontend", "decky.emit events"]
+      dependencies:
+        - component: "bt_hid_service"
+          relationship: "creates/manages BT HID session"
+        - component: "input_reader"
+          relationship: "reads gamepad input via evdev"
+        - component: "config"
+          relationship: "loads/saves settings"
+      integration_points: ["DeckyLoader Plugin sandbox", "Frontend via WebSocket RPC"]
+
+    - component: "BT HID Service (backend/bt_hid_service.py)"
+      responsibility: "BlueZ D-Bus integration, SDP registration, L2CAP socket management, pairing"
+      interfaces: ["start_service()", "stop_service()", "connect(addr)", "disconnect()", "get_status()"]
+      dependencies:
+        - component: "hid_descriptor"
+          relationship: "uses HID report descriptor bytes"
+      integration_points: ["BlueZ D-Bus", "L2CAP control+interrupt channels"]
+
+    - component: "Input Reader (backend/input_reader.py)"
+      responsibility: "Read evdev gamepad events, translate to HID reports"
+      interfaces: ["start_reading(callback)", "stop_reading()", "get_devices()"]
+      dependencies:
+        - component: "hid_descriptor"
+          relationship: "uses report format for packing"
+      integration_points: ["Linux evdev subsystem", "L2CAP interrupt channel"]
+
+    - component: "HID Descriptor (backend/hid_descriptor.py)"
+      responsibility: "Define HID Report Descriptor bytes and report packing"
+      interfaces: ["REPORT_DESCRIPTOR bytes", "pack_report(buttons, axes)"]
+      dependencies: []
+      integration_points: ["SDP record", "L2CAP data format"]
+
+    - component: "Frontend Shell (src/)"
+      responsibility: "UI for connection status, device management, settings"
+      interfaces: ["React components", "useBackend hook for RPC"]
+      dependencies:
+        - component: "main.py"
+          relationship: "calls Python methods via callable()"
+      integration_points: ["@decky/api callable", "@decky/ui components"]
+
+contracts:
+  - from_task: task-backend-hid-descriptor
+    to_task: task-backend-bt-hid
+    interface: "REPORT_DESCRIPTOR: bytes, pack_report(buttons: int, axes: List[int]) -> bytes"
+    format: "Python module import"
+
+  - from_task: task-backend-hid-descriptor
+    to_task: task-backend-input-reader
+    interface: "pack_report(buttons: int, axes: List[int]) -> bytes"
+    format: "Python module import"
+
+  - from_task: task-backend-bt-hid
+    to_task: task-plugin-entry
+    interface: "BTHIDService class with start/stop/connect/disconnect/get_status async methods"
+    format: "Python async class instantiation"
+
+  - from_task: task-backend-input-reader
+    to_task: task-plugin-entry
+    interface: "InputReader class with start_reading/stop_reading/get_devices async methods"
+    format: "Python async class instantiation"
+
+  - from_task: task-plugin-entry
+    to_task: task-frontend-hooks
+    interface: "callable RPC: get_status, connect_device, disconnect_device, get_devices, get_config, set_config"
+    format: "@decky/api callable<Args, Return> pattern"
+
+  - from_task: task-frontend-hooks
+    to_task: task-frontend-components
+    interface: "useBackend() hook returning {status, devices, connect, disconnect, config, updateConfig}"
+    format: "React custom hook"
+
+  - from_task: task-scaffolding-config
+    to_task: task-ci-build
+    interface: "package.json scripts (build, watch), rollup.config.js, tsconfig.json"
+    format: "npm/pnpm build output"
+
+tasks:
+  # ============================================================
+  # WAVE 1: Scaffolding & Configuration (all parallel)
+  # ============================================================
+  - id: task-scaffolding-config
+    title: "Create build configuration files"
+    description: |
+      Create package.json, rollup.config.js, tsconfig.json, and Makefile.
+      These define the build system for both frontend (pnpm/rollup) and
+      overall project commands.
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "package.json"
+      - "rollup.config.js"
+      - "tsconfig.json"
+      - "Makefile"
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "SteamDeckHomebrew/decky-plugin-template/package.json"
+        description: "Reference for DeckyLoader package.json format"
+      - path: "SteamDeckHomebrew/decky-plugin-template/rollup.config.js"
+        description: "Reference for @decky/rollup config"
+      - path: "SteamDeckHomebrew/decky-plugin-template/tsconfig.json"
+        description: "Reference for TypeScript config"
+    estimated_effort: small
+    estimated_files: 4  # package.json (~35), rollup.config.js (~5), tsconfig.json (~20), Makefile (~40)
+    estimated_lines: 100
+    focus_area: "build-system"
+    verification:
+      - "pnpm install succeeds"
+      - "pnpm run build succeeds (after frontend exists)"
+      - "make help shows available targets"
+    acceptance_criteria:
+      - "package.json has @decky/api, @decky/ui, @decky/rollup dependencies"
+      - "rollup.config.js uses @decky/rollup plugin"
+      - "tsconfig targets ES2020 with react-jsx"
+      - "Makefile has build, dev, deploy, clean targets"
+    tech_stack: ["pnpm", "rollup", "typescript"]
+    test_coverage: null
+    requires_review: false
+
+  - id: task-scaffolding-plugin-meta
+    title: "Create plugin.json and .gitignore"
+    description: |
+      Create plugin.json (DeckyLoader manifest with _root flag for BT access)
+      and .gitignore (Python, Node, DeckyLoader-specific ignores).
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "plugin.json"
+      - ".gitignore"
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "SteamDeckHomebrew/decky-plugin-template/plugin.json"
+        description: "Reference for plugin.json format"
+      - path: "SteamDeckHomebrew/decky-plugin-template/.gitignore"
+        description: "Reference for DeckyLoader .gitignore"
+    estimated_effort: small
+    estimated_files: 2
+    estimated_lines: 50
+    focus_area: "project-meta"
+    verification:
+      - "plugin.json is valid JSON"
+      - "plugin.json has api_version: 1 and _root flag"
+      - ".gitignore covers node_modules, dist, __pycache__, .env"
+    acceptance_criteria:
+      - "plugin.json name is 'Deck Controller'"
+      - "plugin.json has flags: ['_root'] for BlueZ access"
+      - "plugin.json has api_version: 1"
+      - ".gitignore includes DeckyLoader-specific patterns"
+    tech_stack: ["json"]
+    test_coverage: null
+    requires_review: false
+
+  - id: task-scaffolding-license
+    title: "Create LICENSE file"
+    description: |
+      Create BSD-3-Clause license file, standard for DeckyLoader plugins.
+      Include original template copyright notice per DeckyLoader conventions.
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: ["LICENSE"]
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "SteamDeckHomebrew/decky-plugin-template/LICENSE"
+        description: "Reference BSD-3-Clause format"
+    estimated_effort: small
+    estimated_files: 1
+    estimated_lines: 30
+    focus_area: "legal"
+    verification:
+      - "LICENSE file exists and is BSD-3-Clause"
+    acceptance_criteria:
+      - "BSD-3-Clause text with correct copyright holder"
+      - "Includes original DeckyLoader template copyright"
+    tech_stack: []
+    test_coverage: null
+    requires_review: false
+
+  - id: task-scaffolding-assets
+    title: "Create assets and defaults"
+    description: |
+      Create assets/gamepad_sdp.xml (SDP service record for BT HID gamepad)
+      and defaults/defaults.json (default plugin configuration).
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "assets/gamepad_sdp.xml"
+      - "defaults/defaults.json"
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files: []
+    estimated_effort: small
+    estimated_files: 2
+    estimated_lines: 80
+    focus_area: "assets"
+    verification:
+      - "SDP XML is well-formed"
+      - "defaults.json is valid JSON"
+    acceptance_criteria:
+      - "SDP record defines HID gamepad service (UUID 0x0011)"
+      - "SDP record includes HIDDescriptorList attribute"
+      - "defaults.json has polling_rate_ms, device_name, auto_connect fields"
+    tech_stack: ["xml", "json"]
+    test_coverage: null
+    requires_review: false
+
+  - id: task-scaffolding-github-templates
+    title: "Create GitHub issue/PR templates and CODEOWNERS"
+    description: |
+      Create .github/ directory with CODEOWNERS, issue templates
+      (bug_report.md, feature_request.md), and PR template.
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - ".github/CODEOWNERS"
+      - ".github/ISSUE_TEMPLATE/bug_report.md"
+      - ".github/ISSUE_TEMPLATE/feature_request.md"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+    priority: low
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files: []
+    estimated_effort: small
+    estimated_files: 4
+    estimated_lines: 120
+    focus_area: "github-config"
+    verification:
+      - "All template files exist in correct paths"
+      - "Templates use GitHub-compatible frontmatter"
+    acceptance_criteria:
+      - "Bug report has SteamOS version, DeckyLoader version fields"
+      - "Feature request has use case and alternative sections"
+      - "CODEOWNERS assigns @daiedy as default owner"
+    tech_stack: ["markdown"]
+    test_coverage: null
+    requires_review: false
+
+  - id: task-scaffolding-copilot-instructions
+    title: "Create .github/copilot-instructions.md"
+    description: |
+      Create project-specific Copilot instructions covering DeckyLoader
+      plugin conventions, Python backend patterns, BT HID specifics,
+      and SteamOS constraints.
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: [".github/copilot-instructions.md"]
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files: []
+    estimated_effort: small
+    estimated_files: 1
+    estimated_lines: 80
+    focus_area: "developer-experience"
+    verification:
+      - "File exists at correct path"
+      - "Covers key project conventions"
+    acceptance_criteria:
+      - "Documents DeckyLoader API patterns (callable, emit)"
+      - "Documents Python backend structure"
+      - "Documents SteamOS filesystem constraints"
+      - "Documents BT HID testing approach"
+    tech_stack: ["markdown"]
+    test_coverage: null
+    requires_review: false
+
+  # ============================================================
+  # WAVE 2: Core Backend + Frontend Shell
+  # ============================================================
+  - id: task-backend-hid-descriptor
+    title: "Create HID Report Descriptor module"
+    description: |
+      Create backend/hid_descriptor.py with the HID Report Descriptor
+      byte array for a standard gamepad (buttons, D-pad, analog sticks,
+      triggers) and a pack_report() function to serialize input state.
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "backend/hid_descriptor.py"
+      - "backend/__init__.py"
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "assets/gamepad_sdp.xml"
+        description: "SDP record references this descriptor"
+    estimated_effort: medium
+    estimated_files: 2
+    estimated_lines: 120
+    focus_area: "bt-hid-protocol"
+    verification:
+      - "REPORT_DESCRIPTOR is valid HID descriptor bytes"
+      - "pack_report returns correct byte length"
+      - "Descriptor matches USB HID spec for gamepad"
+    acceptance_criteria:
+      - "Supports 16 buttons, 2 analog sticks (X/Y), 2 triggers"
+      - "pack_report(buttons, lx, ly, rx, ry, lt, rt) returns bytes"
+      - "Report ID is 0x01"
+      - "Axis values are 8-bit (0-255) with 128 center"
+    failure_modes:
+      - scenario: "HID descriptor rejected by host"
+        likelihood: medium
+        impact: high
+        mitigation: "Use proven descriptor from open-source BT HID projects"
+    tech_stack: ["python"]
+    test_coverage: "Unit tests for pack_report byte output"
+    requires_review: true
+    review_depth: standard
+    review_security_sensitive: false
+
+  - id: task-backend-bt-hid
+    title: "Create BlueZ BT HID service module"
+    description: |
+      Create backend/bt_hid_service.py with BlueZ D-Bus integration:
+      SDP service registration, L2CAP socket management (control PSM 17,
+      interrupt PSM 19), discoverable mode, pairing agent, and
+      connection lifecycle management.
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["backend/bt_hid_service.py"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies:
+      - task-backend-hid-descriptor
+    conflicts_with: []
+    context_files:
+      - path: "assets/gamepad_sdp.xml"
+        description: "SDP record to register with BlueZ"
+      - path: "backend/hid_descriptor.py"
+        description: "HID descriptor bytes for SDP"
+    estimated_effort: large
+    estimated_files: 1
+    estimated_lines: 280
+    focus_area: "bluetooth"
+    verification:
+      - "Service can register SDP record via sdptool or D-Bus"
+      - "L2CAP sockets bind to PSM 17 and 19"
+      - "Device appears as HID gamepad to scanning hosts"
+    acceptance_criteria:
+      - "Uses BlueZ D-Bus API (org.bluez) for adapter control"
+      - "Registers SDP service record with HID profile"
+      - "Opens L2CAP control (PSM 17) and interrupt (PSM 19) sockets"
+      - "Implements basic pairing agent (NoInputNoOutput capability)"
+      - "Has async start_service/stop_service/connect/disconnect/get_status"
+      - "Emits status change events to frontend"
+    failure_modes:
+      - scenario: "D-Bus access denied on SteamOS"
+        likelihood: medium
+        impact: critical
+        mitigation: "Fallback to bluetoothctl subprocess; _root flag should help"
+      - scenario: "L2CAP socket permission denied"
+        likelihood: medium
+        impact: critical
+        mitigation: "CAP_NET_ADMIN via _root; fallback to hcitool raw commands"
+    tech_stack: ["python", "dbus-python", "bluez", "l2cap"]
+    test_coverage: "Integration test with mock D-Bus"
+    requires_review: true
+    review_depth: full
+    review_security_sensitive: true
+
+  - id: task-backend-input-reader
+    title: "Create evdev input reader module"
+    description: |
+      Create backend/input_reader.py to read Steam Deck gamepad input
+      via evdev, map events to HID report format, and stream to
+      the BT HID interrupt channel.
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["backend/input_reader.py"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies:
+      - task-backend-hid-descriptor
+    conflicts_with: []
+    context_files:
+      - path: "backend/hid_descriptor.py"
+        description: "pack_report function for serializing input"
+    estimated_effort: medium
+    estimated_files: 1
+    estimated_lines: 150
+    focus_area: "input-handling"
+    verification:
+      - "Can enumerate gamepad devices via evdev"
+      - "Maps EV_KEY and EV_ABS events to HID report fields"
+      - "Sends packed reports at configurable polling rate"
+    acceptance_criteria:
+      - "Uses evdev to read /dev/input/event* devices"
+      - "Auto-detects Steam Deck gamepad by name/capabilities"
+      - "Maps buttons (BTN_SOUTH, BTN_EAST, etc.) to HID button bits"
+      - "Maps axes (ABS_X, ABS_Y, ABS_RX, ABS_RY, ABS_Z, ABS_RZ) to report"
+      - "Configurable polling rate (default 8ms = 125Hz)"
+      - "Has async start_reading/stop_reading/get_devices"
+    failure_modes:
+      - scenario: "evdev permission denied for input devices"
+        likelihood: low
+        impact: high
+        mitigation: "_root flag grants root; input group membership"
+    tech_stack: ["python", "evdev"]
+    test_coverage: "Unit test with mock evdev device"
+    requires_review: true
+    review_depth: standard
+    review_security_sensitive: false
+
+  - id: task-backend-config
+    title: "Create configuration management module"
+    description: |
+      Create backend/config.py for loading/saving plugin settings
+      using DeckyLoader's DECKY_PLUGIN_SETTINGS_DIR.
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["backend/config.py"]
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: "defaults/defaults.json"
+        description: "Default configuration values"
+    estimated_effort: small
+    estimated_files: 1
+    estimated_lines: 60
+    focus_area: "configuration"
+    verification:
+      - "Loads defaults from defaults.json"
+      - "Saves/loads from DECKY_PLUGIN_SETTINGS_DIR"
+      - "Handles missing config gracefully"
+    acceptance_criteria:
+      - "get(key) and set(key, value) methods"
+      - "load() and save() for persistence"
+      - "Merges defaults with saved config"
+      - "Thread-safe for async access"
+    tech_stack: ["python"]
+    test_coverage: "Unit test for config merge logic"
+    requires_review: false
+
+  - id: task-frontend-shell
+    title: "Create frontend entry and type definitions"
+    description: |
+      Create src/index.tsx (plugin entry with definePlugin),
+      and src/types.d.ts for asset imports.
+      Registers the plugin with DeckyLoader UI.
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "src/index.tsx"
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies:
+      - task-scaffolding-config
+    conflicts_with: []
+    context_files:
+      - path: "SteamDeckHomebrew/decky-plugin-template/src/index.tsx"
+        description: "Reference for definePlugin pattern"
+    estimated_effort: small
+    estimated_files: 1
+    estimated_lines: 60
+    focus_area: "frontend"
+    verification:
+      - "pnpm run build succeeds"
+      - "index.tsx exports default definePlugin"
+    acceptance_criteria:
+      - "Uses definePlugin() from @decky/api"
+      - "Registers name 'Deck Controller'"
+      - "Uses gamepad icon from react-icons"
+      - "Sets up event listeners for status updates"
+    tech_stack: ["typescript", "react"]
+    test_coverage: null
+    requires_review: false
+
+  # ============================================================
+  # WAVE 3: Plugin Entry + Frontend Components
+  # ============================================================
+  - id: task-plugin-entry
+    title: "Create main.py plugin entry point"
+    description: |
+      Create main.py with Plugin class implementing DeckyLoader lifecycle
+      (_main, _unload, _uninstall) and RPC methods that delegate to
+      backend modules (bt_hid_service, input_reader, config).
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    covers: ["main.py"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies:
+      - task-backend-bt-hid
+      - task-backend-input-reader
+      - task-backend-config
+    conflicts_with: []
+    context_files:
+      - path: "SteamDeckHomebrew/decky-plugin-template/main.py"
+        description: "Reference for Plugin class pattern"
+      - path: "backend/bt_hid_service.py"
+        description: "BT HID service to orchestrate"
+      - path: "backend/input_reader.py"
+        description: "Input reader to orchestrate"
+      - path: "backend/config.py"
+        description: "Config manager"
+    estimated_effort: medium
+    estimated_files: 1
+    estimated_lines: 120
+    focus_area: "plugin-core"
+    verification:
+      - "Plugin loads in DeckyLoader without errors"
+      - "RPC methods callable from frontend"
+      - "Clean shutdown on _unload"
+    acceptance_criteria:
+      - "Plugin class with api_version 1 patterns"
+      - "_main() initializes BT service and input reader"
+      - "_unload() cleanly stops all services"
+      - "_uninstall() removes config files"
+      - "RPC methods: get_status, connect_device, disconnect_device, get_devices, get_config, set_config"
+      - "Uses decky.emit for status change events"
+    failure_modes:
+      - scenario: "Backend module import fails on SteamOS"
+        likelihood: low
+        impact: high
+        mitigation: "Bundle all dependencies; test import chain"
+    tech_stack: ["python"]
+    test_coverage: null
+    requires_review: true
+    review_depth: standard
+    review_security_sensitive: false
+
+  - id: task-frontend-hooks
+    title: "Create backend RPC hooks"
+    description: |
+      Create src/hooks/useBackend.ts with typed callable wrappers
+      for all backend RPC methods and event listeners.
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    covers: ["src/hooks/useBackend.ts"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies:
+      - task-frontend-shell
+      - task-plugin-entry
+    conflicts_with: []
+    context_files:
+      - path: "src/index.tsx"
+        description: "Frontend entry point"
+      - path: "main.py"
+        description: "Backend RPC methods to wrap"
+    estimated_effort: small
+    estimated_files: 1
+    estimated_lines: 80
+    focus_area: "frontend-backend-bridge"
+    verification:
+      - "TypeScript compiles without errors"
+      - "All backend methods have typed wrappers"
+    acceptance_criteria:
+      - "callable<> wrappers for all main.py public methods"
+      - "Event listener setup for status_changed events"
+      - "useBackend() hook returns {status, devices, connect, disconnect, config, updateConfig}"
+      - "Proper TypeScript types for all return values"
+    tech_stack: ["typescript", "react"]
+    test_coverage: null
+    requires_review: false
+
+  - id: task-frontend-components
+    title: "Create frontend UI components"
+    description: |
+      Create MainView.tsx (connection status + controls),
+      DeviceList.tsx (paired/discovered devices),
+      and Settings.tsx (configuration panel).
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "src/components/MainView.tsx"
+      - "src/components/DeviceList.tsx"
+      - "src/components/Settings.tsx"
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies:
+      - task-frontend-hooks
+    conflicts_with: []
+    context_files:
+      - path: "src/hooks/useBackend.ts"
+        description: "Backend hook to consume"
+    estimated_effort: medium
+    estimated_files: 3
+    estimated_lines: 250
+    focus_area: "frontend-ui"
+    verification:
+      - "All components render without errors"
+      - "Uses @decky/ui components (PanelSection, ButtonItem, etc.)"
+      - "Build succeeds"
+    acceptance_criteria:
+      - "MainView shows connection status (disconnected/connecting/connected)"
+      - "MainView has connect/disconnect button"
+      - "DeviceList shows paired devices with signal strength"
+      - "Settings has polling rate, device name, auto-connect toggles"
+      - "Uses @decky/ui PanelSection, PanelSectionRow, ButtonItem, ToggleField, SliderField"
+    tech_stack: ["typescript", "react", "@decky/ui"]
+    test_coverage: null
+    requires_review: false
+
+  # ============================================================
+  # WAVE 4: CI/CD + Documentation
+  # ============================================================
+  - id: task-ci-build
+    title: "Create GitHub Actions build workflow"
+    description: |
+      Create .github/workflows/build.yml for PR/push validation:
+      install pnpm deps, build frontend, validate Python syntax.
+    wave: 4
+    agent: gem-devops
+    prototype: false
+    covers: [".github/workflows/build.yml"]
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies:
+      - task-scaffolding-config
+      - task-frontend-shell
+    conflicts_with: []
+    context_files:
+      - path: "package.json"
+        description: "Build scripts"
+      - path: "Makefile"
+        description: "Build targets"
+    estimated_effort: small
+    estimated_files: 1
+    estimated_lines: 60
+    focus_area: "ci-cd"
+    verification:
+      - "Workflow triggers on push/PR to main"
+      - "pnpm install and build succeed"
+      - "Python syntax check passes"
+    acceptance_criteria:
+      - "Uses pnpm v9 with Node.js 18+"
+      - "Runs pnpm install and pnpm build"
+      - "Runs python -m py_compile on all .py files"
+      - "Caches pnpm store"
+    environment: null
+    requires_approval: false
+    devops_security_sensitive: false
+    tech_stack: ["github-actions", "pnpm"]
+    test_coverage: null
+    requires_review: false
+
+  - id: task-ci-release
+    title: "Create GitHub Actions release workflow"
+    description: |
+      Create .github/workflows/release.yml for creating releases
+      with plugin ZIP in DeckyLoader distribution format.
+    wave: 4
+    agent: gem-devops
+    prototype: false
+    covers: [".github/workflows/release.yml"]
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies:
+      - task-ci-build
+    conflicts_with: []
+    context_files:
+      - path: ".github/workflows/build.yml"
+        description: "Build workflow to reference"
+    estimated_effort: small
+    estimated_files: 1
+    estimated_lines: 80
+    focus_area: "ci-cd"
+    verification:
+      - "Workflow triggers on tag push (v*)"
+      - "Creates ZIP with correct DeckyLoader layout"
+      - "Uploads ZIP as release asset"
+    acceptance_criteria:
+      - "Triggers on v* tag push"
+      - "Builds frontend with pnpm"
+      - "Creates ZIP with: dist/, main.py, backend/, plugin.json, package.json, LICENSE, README.md, defaults/, assets/"
+      - "Creates GitHub release with ZIP attached"
+    environment: null
+    requires_approval: false
+    devops_security_sensitive: false
+    tech_stack: ["github-actions"]
+    test_coverage: null
+    requires_review: false
+
+  - id: task-docs-architecture
+    title: "Create architecture and protocol documentation"
+    description: |
+      Create docs/ARCHITECTURE.md (system overview with Mermaid diagrams),
+      docs/BLUETOOTH.md (BT HID protocol details),
+      docs/STEAMOS.md (SteamOS constraints),
+      and docs/DEVELOPMENT.md (dev setup guide).
+    wave: 4
+    agent: gem-documentation-writer
+    prototype: false
+    covers:
+      - "docs/ARCHITECTURE.md"
+      - "docs/BLUETOOTH.md"
+      - "docs/STEAMOS.md"
+      - "docs/DEVELOPMENT.md"
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies:
+      - task-backend-bt-hid
+      - task-backend-input-reader
+      - task-plugin-entry
+    conflicts_with: []
+    context_files:
+      - path: "main.py"
+        description: "Plugin entry point"
+      - path: "backend/bt_hid_service.py"
+        description: "BT HID implementation"
+      - path: "backend/input_reader.py"
+        description: "Input reader implementation"
+    estimated_effort: medium
+    estimated_files: 4
+    estimated_lines: 400
+    focus_area: "documentation"
+    verification:
+      - "All docs files exist"
+      - "Mermaid diagrams render correctly"
+      - "Links between docs are valid"
+    acceptance_criteria:
+      - "ARCHITECTURE.md has system diagram, component overview, data flow"
+      - "BLUETOOTH.md covers SDP, L2CAP, HID descriptor, pairing flow"
+      - "STEAMOS.md covers immutable fs, permissions, systemd, BlueZ version"
+      - "DEVELOPMENT.md covers setup, building, testing, deploying to Deck"
+    task_type: documentation
+    audience: developers
+    coverage_matrix:
+      - "System architecture"
+      - "BT HID protocol"
+      - "SteamOS environment"
+      - "Development workflow"
+
+  - id: task-docs-adr
+    title: "Create Architecture Decision Records"
+    description: |
+      Create docs/ADR/001-bt-hid-emulation.md (why BT HID over other approaches)
+      and docs/ADR/002-steamos-filesystem.md (filesystem strategy for SteamOS).
+    wave: 4
+    agent: gem-documentation-writer
+    prototype: false
+    covers:
+      - "docs/ADR/001-bt-hid-emulation.md"
+      - "docs/ADR/002-steamos-filesystem.md"
+    priority: low
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies:
+      - task-backend-bt-hid
+    conflicts_with: []
+    context_files:
+      - path: "backend/bt_hid_service.py"
+        description: "BT HID implementation being documented"
+    estimated_effort: small
+    estimated_files: 2
+    estimated_lines: 120
+    focus_area: "documentation"
+    verification:
+      - "ADR files exist and follow ADR format"
+    acceptance_criteria:
+      - "ADR-001: Documents BT HID vs WiFi, vs USB, vs cloud relay"
+      - "ADR-001: Decision is Phase 1 Python + Phase 2 optional Rust"
+      - "ADR-002: Documents read-only rootfs constraints"
+      - "ADR-002: Strategy for config/data in ~/homebrew/ paths"
+    task_type: documentation
+    audience: developers
+    coverage_matrix:
+      - "BT HID approach rationale"
+      - "SteamOS filesystem strategy"
+
+  # ============================================================
+  # WAVE 5: GitHub Agents + Skills
+  # ============================================================
+  - id: task-github-agents
+    title: "Create GitHub Copilot agent definitions"
+    description: |
+      Create 4 specialized agent files in .github/agents/:
+      decky-plugin-dev, bt-hid-expert, steamos-expert, doc-keeper.
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - ".github/agents/decky-plugin-dev.agent.md"
+      - ".github/agents/bt-hid-expert.agent.md"
+      - ".github/agents/steamos-expert.agent.md"
+      - ".github/agents/doc-keeper.agent.md"
+    priority: low
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies:
+      - task-plugin-entry
+      - task-docs-architecture
+    conflicts_with: []
+    context_files:
+      - path: "docs/ARCHITECTURE.md"
+        description: "Architecture context for agents"
+      - path: "main.py"
+        description: "Plugin structure for agents"
+    estimated_effort: medium
+    estimated_files: 4
+    estimated_lines: 300
+    focus_area: "developer-experience"
+    verification:
+      - "All agent files exist in .github/agents/"
+      - "Agent files follow Copilot agent.md format"
+    acceptance_criteria:
+      - "decky-plugin-dev: DeckyLoader API, plugin lifecycle, frontend patterns"
+      - "bt-hid-expert: BlueZ D-Bus, L2CAP, SDP, HID descriptors, evdev"
+      - "steamos-expert: SteamOS constraints, filesystem, systemd, permissions"
+      - "doc-keeper: Documentation standards, update triggers"
+    tech_stack: ["markdown"]
+    test_coverage: null
+    requires_review: false
+
+  - id: task-github-skills
+    title: "Create GitHub Copilot skill definitions"
+    description: |
+      Create 3 skill files in .github/skills/:
+      build-plugin, test-on-deck, bt-debug.
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - ".github/skills/build-plugin/SKILL.md"
+      - ".github/skills/test-on-deck/SKILL.md"
+      - ".github/skills/bt-debug/SKILL.md"
+    priority: low
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies:
+      - task-ci-build
+      - task-docs-architecture
+    conflicts_with: []
+    context_files:
+      - path: "Makefile"
+        description: "Build targets for build-plugin skill"
+      - path: "docs/DEVELOPMENT.md"
+        description: "Dev workflow for test-on-deck skill"
+    estimated_effort: small
+    estimated_files: 3
+    estimated_lines: 180
+    focus_area: "developer-experience"
+    verification:
+      - "All skill files exist in .github/skills/"
+      - "Skills follow SKILL.md format"
+    acceptance_criteria:
+      - "build-plugin: pnpm install, build, create ZIP"
+      - "test-on-deck: SSH deploy, DeckyLoader reload, log tailing"
+      - "bt-debug: bluetoothctl commands, dbus-monitor, L2CAP debugging"
+    tech_stack: ["markdown"]
+    test_coverage: null
+    requires_review: false
+
+  # ============================================================
+  # WAVE 6: README (depends on everything)
+  # ============================================================
+  - id: task-readme
+    title: "Create comprehensive README.md"
+    description: |
+      Create README.md with badges, architecture diagram, features list,
+      installation instructions, usage guide, development setup,
+      and contributing guidelines.
+    wave: 6
+    agent: gem-documentation-writer
+    prototype: false
+    covers: ["README.md"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies:
+      - task-plugin-entry
+      - task-frontend-components
+      - task-ci-build
+      - task-docs-architecture
+    conflicts_with: []
+    context_files:
+      - path: "docs/ARCHITECTURE.md"
+        description: "Architecture to summarize"
+      - path: "plugin.json"
+        description: "Plugin metadata"
+      - path: "main.py"
+        description: "Feature set reference"
+    estimated_effort: medium
+    estimated_files: 1
+    estimated_lines: 200
+    focus_area: "documentation"
+    verification:
+      - "README.md exists at root"
+      - "All links resolve"
+      - "Badge URLs are correct"
+    acceptance_criteria:
+      - "GitHub Actions build badge"
+      - "License badge"
+      - "Architecture Mermaid diagram"
+      - "Feature list with status indicators"
+      - "Quick install instructions"
+      - "Development setup section"
+      - "Contributing section"
+      - "Known limitations section (Phase 1)"
+    task_type: documentation
+    audience: end-users
+    coverage_matrix:
+      - "Project overview"
+      - "Installation"
+      - "Usage"
+      - "Development"
+      - "Contributing"

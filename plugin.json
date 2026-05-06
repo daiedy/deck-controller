@@ -1,0 +1,11 @@
+{
+  "name": "Deck Controller",
+  "author": "daiedy",
+  "flags": ["root"],
+  "api_version": 1,
+  "publish": {
+    "tags": ["controller", "bluetooth", "gamepad", "hid"],
+    "description": "Turn your Steam Deck into a Bluetooth gamepad controller for PC, Android, and iOS/macOS",
+    "image": "https://raw.githubusercontent.com/daiedy/deck-controller/main/assets/icon.png"
+  }
+}
