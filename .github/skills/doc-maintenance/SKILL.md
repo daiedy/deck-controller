@@ -70,36 +70,24 @@ When the agent detects a significant architecture change, it creates a new ADR:
 6. **Save state**: Write current HEAD hash to `docs/.last-doc-update`
 7. **Report**: Summarize what was updated
 
-## Automated Schedule (Optional)
+## Automated Schedule (Recommended)
 
-To run doc maintenance automatically, add to `.github/workflows/doc-maintenance.yml`:
+Local automation is provided and recommended via the included Copilot CLI scripts and macOS launchd plists. Use the helper script to install scheduled review jobs (doc review, code review, wiki sync):
 
-```yaml
-name: Documentation Maintenance
-on:
-  schedule:
-    - cron: '0 9 */3 * *'  # Every 3 days at 9 AM
-  workflow_dispatch:
-
-jobs:
-  update-docs:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Run doc-keeper
-        run: |
-          # Use GitHub Copilot CLI or custom script
-          echo "Run @doc-keeper agent here"
-      - name: Create PR
-        uses: peter-evans/create-pull-request@v6
-        with:
-          title: "docs: automated documentation sync"
-          body: "Documentation updated by doc-keeper agent"
-          branch: docs/auto-update
+```bash
+# Install launchd jobs and verify Copilot CLI
+./scripts/setup-automation.sh install
 ```
 
+What this installs:
+
+- `doc-review` — runs `scripts/doc-review.sh` (every 2 days) to analyze code changes and update docs
+- `code-review` — runs `scripts/code-review.sh` (every 3 days) to generate code review reports
+- `wiki-sync` — triggered after a successful doc update to sync docs/ to the GitHub Wiki
+
+Plist files live in `scripts/launchd/` and log to `docs/.reviews/`.
+
+If you prefer CI-based automation, a GitHub Actions workflow can still be used (legacy/optional) — the repository now provides local Copilot CLI automation by default.
 ## Review Process
 
 1. Agent makes changes to documentation files

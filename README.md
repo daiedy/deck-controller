@@ -148,7 +148,7 @@ Config: `~/homebrew/settings/deck-controller/config.json`
 | [Bluetooth HID](docs/BLUETOOTH.md) | Protocol details, SDP, L2CAP, report descriptor |
 | [SteamOS Notes](docs/STEAMOS.md) | Filesystem constraints, bluetoothd, bundling |
 | [Development](docs/DEVELOPMENT.md) | Setup, build, deploy, contribute |
-| [Wiki](https://github.com/daiedy/deck-controller/wiki) | Full project wiki with guides |
+| [Wiki](https://github.com/daiedy/deck-controller/wiki) | Full project wiki with guides (syncable via scripts/wiki-sync.sh) |
 
 ---
 
