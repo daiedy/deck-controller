@@ -1,0 +1,279 @@
+plan_id: composite-hid-smart-mapping
+objective: |
+  Implement a composite HID device that exposes ALL Steam Deck controls intelligently
+  over Bluetooth: trackpads as mouse, gyroscope as motion data, back buttons with smart
+  mapping, and profile-based mode switching. The Deck should behave as a "smart controller"
+  not a dumb Xbox pad.
+created_at: "2026-05-06"
+created_by: coordinator + bt-hid-expert
+status: pending
+research_confidence: high
+
+plan_metrics:
+  total_phases: 4
+  estimated_files_changed: 12-15
+  risk_score: medium-high
+
+tldr: |
+  4 phases. Phase 1 adds mouse (right trackpad → cursor, left → scroll). Phase 2 maps 
+  back buttons (L4/L5/R4/R5) and extends gamepad report. Phase 3 adds gyro/accel via 
+  vendor-specific report. Phase 4 implements profile system (Desktop/FPS/Racing/Media).
+  Main risk: iOS compatibility and IMU evdev access stability on SteamOS.
+
+# ═══════════════════════════════════════════════════════════
+# ARCHITECTURE DECISIONS
+# ═══════════════════════════════════════════════════════════
+
+architecture:
+  composite_hid_approach: "Multiple top-level Application Collections with separate Report IDs"
+  
+  report_ids:
+    0x01:
+      function: "Gamepad (sticks, triggers, 20 buttons including back buttons, dpad)"
+      usage_page: "Generic Desktop (0x01) / Gamepad (0x05)"
+      report_size: 14 bytes
+    0x02:
+      function: "Mouse (right trackpad → relative XY, left trackpad → scroll)"
+      usage_page: "Generic Desktop (0x01) / Mouse (0x02)"
+      report_size: 5 bytes
+    0x03:
+      function: "Motion sensor (gyro XYZ + accel XYZ)"
+      usage_page: "Vendor Specific (0xFF00) — DualSense-style for SDL2 compatibility"
+      report_size: 12 bytes
+    0x04:
+      function: "Consumer Control (media keys, volume)"
+      usage_page: "Consumer (0x0C)"
+      report_size: 2 bytes
+
+  descriptor_budget: "~225 bytes total (safe limit 400 bytes for BT SDP)"
+
+  evdev_sources:
+    main_controller: "Valve Software Steam Controller — sticks, triggers, ABXY, bumpers, dpad, trackpads"
+    trackpads:
+      right: "ABS_HAT3X, ABS_HAT3Y (absolute 0-32767)"
+      left: "ABS_HAT2X, ABS_HAT2Y (absolute 0-32767)"
+    back_buttons: "BTN_TRIGGER_HAPPY1 (L4), BTN_TRIGGER_HAPPY2 (L5), BTN_TRIGGER_HAPPY3 (R4), BTN_TRIGGER_HAPPY4 (R5)"
+    imu: "Separate evdev device — ABS_RX/RY/RZ (gyro), ABS_X/Y/Z (accel)"
+    capacitive_sticks: "BTN_TRIGGER_HAPPY5/6 (driver-dependent)"
+
+  mouse_conversion:
+    method: "Absolute trackpad position → delta (relative) calculation in Python"
+    sensitivity: "Configurable scale factor per profile"
+    click: "Physical trackpad press → Mouse Button 1 (left click)"
+    right_click: "Two-finger tap OR long press (configurable)"
+    scroll: "Left trackpad Y-axis → wheel reports"
+
+  gyro_strategy: |
+    Use Vendor-Specific page (0xFF00) for maximum SDL2/Steam Input compatibility.
+    DualSense-style layout: gyro XYZ + accel XYZ as 6 × int16.
+    iOS will NOT see this — acceptable trade-off (no HID path for iOS motion).
+    Windows/macOS/Android work via SDL2 which parses vendor reports.
+
+  profile_system:
+    mechanism: "Software-only — same descriptor always advertised, profiles control WHICH reports are sent"
+    reason: "BT HID descriptor cannot change after SDP registration without re-pairing"
+    profiles:
+      - name: Desktop
+        active_reports: [mouse, consumer_control]
+        description: "Trackpad = cursor, back buttons = copy/paste/undo/redo, triggers = scroll speed"
+      - name: FPS
+        active_reports: [gamepad, motion]
+        description: "Full gamepad + gyro aim, right trackpad = high-res aim, back buttons = extra game buttons"
+      - name: Racing
+        active_reports: [gamepad, motion]
+        description: "Sticks + triggers, gyro = steering tilt"
+      - name: Media
+        active_reports: [consumer_control, mouse]
+        description: "Media keys (play/pause/skip), trackpad = cursor, volume via triggers"
+
+# ═══════════════════════════════════════════════════════════
+# PER-OS COMPATIBILITY
+# ═══════════════════════════════════════════════════════════
+
+compatibility:
+  windows:
+    gamepad: "✅ XInput/DInput — splits composite into separate device nodes"
+    mouse: "✅ mouhid.sys — transparent cursor control"
+    gyro: "✅ via SDL2/Steam Input parsing vendor reports"
+    consumer: "✅ native"
+  android:
+    gamepad: "✅ InputDevice(SOURCE_GAMEPAD)"
+    mouse: "✅ InputDevice(SOURCE_MOUSE) — cursor appears"
+    gyro: "✅ via SDL2 (games using SDL2); ❌ native Android sensor API"
+    consumer: "✅ native"
+  ios:
+    gamepad: "✅ GCExtendedGamepad (if descriptor matches Apple's expected format)"
+    mouse: "✅ AssistiveTouch pointer (iOS 13+)"
+    gyro: "❌ Not feasible via HID — iOS GCMotion is internal only"
+    consumer: "✅ native"
+  macos:
+    gamepad: "✅ GCController"
+    mouse: "✅ IOHIDPointing"
+    gyro: "✅ via SDL2; ⚠️ GCController won't see it"
+    consumer: "✅ native"
+
+# ═══════════════════════════════════════════════════════════
+# IMPLEMENTATION PHASES
+# ═══════════════════════════════════════════════════════════
+
+phases:
+  - id: 1
+    name: "Composite HID — Mouse via Trackpad"
+    risk: low
+    value: very-high
+    files:
+      - backend/hid_descriptor.py  # Add Report ID 0x02 mouse collection
+      - backend/input_reader.py    # Add trackpad reading, delta calculation
+      - backend/bt_hid_service.py  # Send multiple report types
+      - assets/gamepad_sdp.xml     # Updated descriptor in SDP
+    tasks:
+      - "Design mouse HID collection (Generic Desktop Mouse, relative X/Y + 3 buttons + wheel)"
+      - "Refactor input_reader to open trackpad evdev (ABS_HAT2X/3X detection)"
+      - "Implement absolute→relative delta conversion with configurable sensitivity"
+      - "Right trackpad click → Button 1, detect ABS_HAT2/3 for scroll"
+      - "bt_hid_service: send Report ID 0x02 at 125Hz alongside gamepad at 250Hz"
+      - "Update SDP record with new composite descriptor"
+    acceptance:
+      - "Right trackpad moves cursor on Windows/macOS/Android host"
+      - "Left trackpad scrolls (vertical wheel)"
+      - "Physical trackpad click = left mouse button"
+      - "Gamepad reports still work simultaneously"
+      - "Total descriptor size < 400 bytes"
+
+  - id: 2
+    name: "Extended Gamepad — Back Buttons + Expanded Mapping"
+    risk: low
+    value: high
+    files:
+      - backend/hid_descriptor.py  # Expand button count 16→20
+      - backend/input_reader.py    # Read BTN_TRIGGER_HAPPY1-4
+      - src/components/Settings.tsx # UI for button mapping display
+    tasks:
+      - "Extend gamepad Report ID 0x01: 20 buttons (add L4/L5/R4/R5)"
+      - "Read BTN_TRIGGER_HAPPY1-4 from evdev and pack into report"
+      - "Settings UI: show back button mapping per profile"
+      - "Verify Windows DInput/XInput sees buttons 17-20"
+    acceptance:
+      - "All 4 back buttons appear as buttons 17-20 on host"
+      - "Host can map them in game settings"
+      - "Settings UI shows current button assignments"
+
+  - id: 3
+    name: "Motion Sensor — Gyro + Accelerometer"
+    risk: high
+    value: medium
+    files:
+      - backend/hid_descriptor.py  # Add Report ID 0x03 vendor sensor collection
+      - backend/input_reader.py    # Open IMU evdev device, read ABS_RX/RY/RZ + ABS_X/Y/Z
+      - backend/imu_reader.py      # NEW: dedicated IMU reader with calibration
+      - backend/config.py          # Gyro calibration offsets, sensitivity
+    tasks:
+      - "Design vendor-specific (0xFF00) motion report: 6 × int16 (gyro + accel)"
+      - "Implement IMU evdev device discovery (separate from main controller)"
+      - "Read angular velocity + acceleration at 100Hz"
+      - "Implement zero-offset calibration (at-rest sampling)"
+      - "Send Report ID 0x03 at 100Hz when motion profile active"
+      - "Test with SDL2's sensor API on host (SDL_GameControllerGetSensorData)"
+    acceptance:
+      - "SDL2-based games see gyro/accel data"
+      - "Motion data is calibrated (no drift at rest)"
+      - "Can be toggled on/off from plugin UI"
+      - "Steam Input recognizes motion (if running on host)"
+    risks:
+      - "IMU evdev device may not be exposed if hid-steam driver version differs"
+      - "High polling rate (100Hz) may increase BT bandwidth pressure"
+      - "iOS will NOT see motion data — documented limitation"
+
+  - id: 4
+    name: "Profile System — Smart Mode Switching"
+    risk: low
+    value: high
+    files:
+      - backend/profile_manager.py  # NEW: profile logic
+      - backend/config.py           # Profile storage
+      - src/components/Settings.tsx  # Profile selector UI
+      - src/components/ProfilePicker.tsx  # NEW: profile switching component
+      - main.py                     # RPC methods for profile management
+    tasks:
+      - "Define profile schema: name, active_reports[], button_mappings, sensitivity"
+      - "4 default profiles: Desktop, FPS, Racing, Media"
+      - "ProfileManager class: load/save/switch profiles, controls which reports are sent"
+      - "Frontend: profile picker with icon + description per profile"
+      - "RPC methods: get_profiles, set_active_profile, update_profile"
+      - "Quick-switch: configurable button combo (e.g., Steam+L4) for cycling profiles"
+      - "Consumer Control Report ID 0x04 for Media profile (play/pause, volume, skip)"
+    acceptance:
+      - "Can switch between 4 profiles from plugin UI"
+      - "Desktop profile: cursor works, gamepad is quiet"
+      - "FPS profile: gamepad + gyro active"
+      - "Media profile: volume/playback buttons work on host"
+      - "Profiles persist across plugin restarts"
+      - "Quick-switch combo works without opening UI"
+
+# ═══════════════════════════════════════════════════════════
+# RISKS & MITIGATIONS
+# ═══════════════════════════════════════════════════════════
+
+risks:
+  - id: R1
+    description: "iOS may not recognize composite gamepad + mouse as valid GCExtendedGamepad"
+    likelihood: medium
+    impact: high
+    mitigation: |
+      Test with minimal composite (gamepad only) first on iOS. If conflict detected,
+      implement per-OS descriptor selection at pairing time (detect iOS via BT device class
+      or user manual selection). Worst case: iOS gets gamepad-only mode.
+
+  - id: R2
+    description: "IMU evdev device not available on all SteamOS versions"
+    likelihood: medium
+    impact: medium
+    mitigation: |
+      Graceful degradation: if IMU device not found, disable motion profile.
+      Log warning, show "IMU unavailable" in UI. Phase 3 is optional.
+
+  - id: R3
+    description: "BT bandwidth saturation with 3 report types at high frequency"
+    likelihood: low
+    impact: medium
+    mitigation: |
+      Rate-limit per report type. Gamepad: 250Hz, Mouse: 125Hz, Motion: 100Hz.
+      Only active profile's reports are sent. Total is always ≤ 250 reports/sec.
+
+  - id: R4
+    description: "Descriptor hot-swap not possible — profiles are send-side only"
+    likelihood: none
+    impact: info
+    mitigation: |
+      All 4 collections are always in the descriptor. Profiles only control which
+      Report IDs actually get sent. Host ignores idle report types. Documented.
+
+  - id: R5
+    description: "Steam Client grabs evdev (EVIOCGRAB) blocking our reader"
+    likelihood: high
+    impact: critical
+    mitigation: |
+      Already handled by existing input_reader.py EVIOCGRAB. If Steam has grabbed,
+      we must wait or coordinate. Possibly use lizard mode or disable Steam Input
+      for the internal controller in Desktop Mode.
+
+# ═══════════════════════════════════════════════════════════
+# REFERENCE PROJECTS
+# ═══════════════════════════════════════════════════════════
+
+references:
+  - name: InputPlumber
+    url: "https://github.com/ShadowBlip/InputPlumber"
+    relevance: "Rust input manager for handhelds, handles Steam Deck trackpads/gyro, composite output"
+  - name: HandyGCCS
+    url: "https://github.com/ShadowBlip/HandyGCCS"
+    relevance: "Game controller emulation, evdev handling for back buttons and trackpads"
+  - name: DualSense HID (SDL2)
+    url: "https://github.com/libsdl-org/SDL/blob/main/src/joystick/hidapi/SDL_hidapi_ps5.c"
+    relevance: "Reference for vendor-specific gyro report parsing"
+  - name: hid-nintendo (kernel)
+    url: "https://github.com/torvalds/linux/blob/master/drivers/hid/hid-nintendo.c"
+    relevance: "Switch Pro Controller IMU parsing reference"
+  - name: bluetooth_gamepad (Python)
+    url: "https://github.com/niccokunzmann/bluetooth_gamepad"
+    relevance: "Similar architecture — Python BT HID gamepad on Linux"

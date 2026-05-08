@@ -1,0 +1,569 @@
+plan_id: deck-controller-audit
+objective: |
+  Analyze deck-controller plan vs implementation, architecture coherence,
+  composite HID plan feasibility, SDP/descriptor alignment, ADR completeness,
+  documentation gaps, and roadmap health.
+focus_area: plan-vs-implementation-audit
+created_at: "2026-05-07"
+created_by: gem-researcher
+status: completed
+
+tldr: |
+  - Plan health score: 8/10. Codebase is well ahead of the setup plan — all 4 composite HID
+    phases are substantially implemented, not just scaffolding.
+  - The SDP record already contains the FULL composite descriptor (gamepad+mouse+motion) even
+    though the setup plan (deck-controller-setup) shows status=pending.
+  - Implementation matches composite-hid-smart-mapping plan closely; all 4 phases are coded.
+  - Key gap: ARCHITECTURE.md describes the ORIGINAL 16-button/14-byte gamepad-only layout,
+    but code has evolved to 20 buttons, composite descriptor, mouse, motion, profiles.
+  - Consumer Control (Report ID 0x04) is planned but NOT implemented in code or descriptor.
+  - SDP descriptor hex blob is synced with code — verified matching.
+  - No circular dependencies found.
+  - Risk R5 (Steam EVIOCGRAB conflict) is the biggest unresolved technical risk.
+
+research_metadata:
+  methodology: "Full file read of all docs + implementation files, cross-referencing plans with code"
+  scope: "All backend Python, frontend structure, docs, plans, SDP record, plugin manifest"
+  confidence: high
+  coverage: 95  # percent of relevant files examined
+  decision_blockers: 1  # Consumer Control implementation decision
+  research_blockers: 0
+
+# ═══════════════════════════════════════════════════════════════════
+# 1. PLAN HEALTH ASSESSMENT
+# ═══════════════════════════════════════════════════════════════════
+
+plan_health:
+  overall_score: 8
+  max_score: 10
+  breakdown:
+    plan_vs_code_alignment: 7  # docs lag behind code significantly
+    architecture_coherence: 9  # clean component boundaries, no circular deps
+    composite_hid_feasibility: 8  # well-researched, iOS risk acknowledged
+    sdp_descriptor_alignment: 9  # SDP hex matches code-generated descriptor
+    adr_completeness: 7  # missing ADRs for composite HID and profile decisions
+    documentation_freshness: 5  # ARCHITECTURE.md is stale — describes pre-composite layout
+    roadmap_realism: 8  # 4-phase approach is sound; only Consumer Control remains
+
+# ═══════════════════════════════════════════════════════════════════
+# 2. PLAN VS IMPLEMENTATION GAPS
+# ═══════════════════════════════════════════════════════════════════
+
+gaps_plan_vs_code:
+  implemented_but_not_in_setup_plan:
+    - item: "Composite HID descriptor (gamepad + mouse + motion)"
+      location: "backend/hid_descriptor.py:1-200"
+      detail: |
+        hid_descriptor.py contains GAMEPAD_REPORT_DESCRIPTOR (20 buttons),
+        MOUSE_REPORT_DESCRIPTOR (Report ID 0x02), MOTION_REPORT_DESCRIPTOR
+        (Report ID 0x03), and COMPOSITE_REPORT_DESCRIPTOR combining all three.
+        The deck-controller-setup plan shows status=pending and only mentions
+        the original 16-button gamepad layout.
+
+    - item: "TrackpadMouse class — absolute-to-relative delta conversion"
+      location: "backend/trackpad_mouse.py"
+      detail: |
+        Full implementation of right trackpad → cursor, left trackpad → scroll.
+        Sensitivity configurable. This was Phase 1 of composite-hid-smart-mapping
+        plan but is already implemented.
+
+    - item: "IMUReader class — gyro + accel with zero-offset calibration"
+      location: "backend/imu_reader.py"
+      detail: |
+        Complete IMU reader with device discovery (IMU_DEVICE_NAMES), calibration
+        (CALIBRATION_SAMPLES=100), and EV_SYN frame-based state dispatch.
+        This was Phase 3 of composite-hid-smart-mapping plan.
+
+    - item: "ProfileManager + Profile system"
+      location: "backend/profile_manager.py"
+      detail: |
+        4 default profiles (Desktop, FPS, Racing, Media) with active_reports
+        filtering, trackpad_mode, sensitivity settings, JSON persistence.
+        This was Phase 4 of composite-hid-smart-mapping plan.
+
+    - item: "ProfilePicker frontend component"
+      location: "src/components/ProfilePicker.tsx"
+      detail: "File exists in workspace but content not audited in this pass."
+
+    - item: "pack_mouse_report() and pack_motion_report() functions"
+      location: "backend/hid_descriptor.py:241-285"
+      detail: "Fully implemented with proper clamping and struct.pack formats."
+
+    - item: "Back buttons (L4/L5/R4/R5) mapping via BTN_TRIGGER_HAPPY1-4"
+      location: "backend/input_reader.py:87-92"
+      detail: |
+        Back buttons mapped to bits 13-16 with getattr fallback for ecodes
+        compatibility. 20-button bitmask in pack_report(). This was Phase 2.
+
+    - item: "Trackpad reading in InputState (ABS_HAT2X/3X)"
+      location: "backend/input_reader.py:309-330"
+      detail: |
+        InputState includes trackpad_right_x/y, trackpad_left_x/y, touch
+        and click booleans. _process_event handles ABS_HAT2X/2Y and ABS_HAT3X/3Y.
+
+  planned_but_not_implemented:
+    - item: "Consumer Control Report ID 0x04 (media keys, volume)"
+      plan_location: "composite-hid-smart-mapping/plan.yaml — Phase 4"
+      detail: |
+        The plan specifies Report ID 0x04 for media keys. ProfileManager code
+        has a "Media" profile with active_reports=["mouse"] but NOT ["consumer_control"].
+        No CONSUMER_CONTROL_REPORT_DESCRIPTOR exists in hid_descriptor.py.
+        No pack_consumer_report() function exists.
+        The SDP record hex blob does NOT contain a Consumer Control collection.
+
+    - item: "Quick-switch button combo (Steam+L4) for cycling profiles"
+      plan_location: "composite-hid-smart-mapping/plan.yaml — Phase 4 tasks"
+      detail: |
+        No code for intercepting button combos to cycle profiles. The profile
+        switching is only available via frontend UI (get_profiles/set_active_profile
+        RPC methods).
+
+    - item: "Per-OS descriptor selection for iOS compatibility"
+      plan_location: "composite-hid-smart-mapping/plan.yaml — Risk R1 mitigation"
+      detail: |
+        No code for detecting iOS vs other hosts or switching to gamepad-only
+        descriptor. SDP always contains full composite descriptor.
+
+    - item: "RPC methods: get_profiles, set_active_profile, update_profile"
+      plan_location: "composite-hid-smart-mapping/plan.yaml — Phase 4"
+      detail: |
+        main.py has enable_gyro/disable_gyro RPC methods and set_config.
+        But dedicated get_profiles/set_active_profile/update_profile RPCs
+        are NOT visible in the main.py excerpt (may be below line 300 — not
+        fully audited). ProfileManager has the backend logic but RPC wiring
+        is unconfirmed.
+
+  documentation_behind_code:
+    - item: "ARCHITECTURE.md describes 16-button/14-byte gamepad-only layout"
+      location: "docs/ARCHITECTURE.md:89-100"
+      detail: |
+        Report Structure table shows 14 bytes with 16-bit buttons bitmask.
+        Code has 20 buttons, 15-byte gamepad report, plus mouse and motion reports.
+        Mermaid diagrams only show gamepad flow, not composite HID.
+
+    - item: "BLUETOOTH.md button mapping table shows 16 buttons (L4/L5/R4/R5 as 'vendor')"
+      location: "docs/BLUETOOTH.md:75-93"
+      detail: |
+        Table lists bits 13-15 as vendor buttons without evdev codes.
+        Code maps them to BTN_TRIGGER_HAPPY1-4 with bits 13-16 (R5 at bit 16).
+
+    - item: "BLUETOOTH.md descriptor breakdown shows original 14-byte layout"
+      location: "docs/BLUETOOTH.md:48-73"
+      detail: |
+        Descriptor breakdown shows 16 buttons, no mouse/motion collections.
+        Actual code/SDP has composite descriptor with 3 collections.
+
+    - item: "defaults.json missing composite-era config keys"
+      location: "defaults/defaults.json"
+      detail: |
+        Missing: mouse_sensitivity, scroll_sensitivity, gyro_sensitivity,
+        imu_poll_rate_hz. Config._load_defaults() hardcodes fallbacks for these
+        in Python, but they should be in defaults.json for documentation purposes.
+
+# ═══════════════════════════════════════════════════════════════════
+# 3. ARCHITECTURE COHERENCE
+# ═══════════════════════════════════════════════════════════════════
+
+architecture:
+  dependency_graph:
+    main_py:
+      imports: [BTHIDService, Config, InputReader, InputState, IMUReader, MotionState, ProfileManager, Profile, TrackpadMouse, pack_report, pack_mouse_report, pack_motion_report]
+      circular_deps: none
+    backend_bt_hid_service:
+      imports: [asyncio, logging, os, socket, subprocess, xml.etree.ElementTree]
+      circular_deps: none
+    backend_input_reader:
+      imports: [evdev, hid_descriptor.DPAD_NEUTRAL]
+      circular_deps: none
+    backend_hid_descriptor:
+      imports: [struct]
+      circular_deps: none
+    backend_imu_reader:
+      imports: [evdev]
+      circular_deps: none
+    backend_trackpad_mouse:
+      imports: []  # pure dataclass, zero imports
+      circular_deps: none
+    backend_profile_manager:
+      imports: [json, logging, os, dataclasses]
+      circular_deps: none
+    backend_config:
+      imports: [json, os, threading, pathlib]
+      circular_deps: none
+
+  clean_separation: true
+  notes: |
+    All backend modules depend only on stdlib + evdev. No circular imports.
+    main.py is the only orchestrator — it wires InputReader callbacks through
+    ProfileManager to BTHIDService. Clean layered architecture.
+    hid_descriptor.py is a pure data/packing module with no side effects.
+    TrackpadMouse is a stateless-ish converter with no external deps.
+
+# ═══════════════════════════════════════════════════════════════════
+# 4. SDP vs HID DESCRIPTOR ALIGNMENT
+# ═══════════════════════════════════════════════════════════════════
+
+sdp_descriptor_alignment:
+  status: aligned
+  details:
+    psm_control:
+      sdp_value: "0x0011 (17)"
+      code_value: "PSM_CONTROL = 17"
+      match: true
+    psm_interrupt:
+      sdp_value: "0x0013 (19)"
+      code_value: "PSM_INTERRUPT = 19"
+      match: true
+    device_class:
+      sdp_subclass: "0x08 (Gamepad)"
+      code_class: "0x002508"
+      match: true  # 0x002508 = Major:Peripheral(0x0500), Minor:Gamepad(0x08)
+    hid_version:
+      sdp_value: "0x0101 (v1.1)"
+      code_assumption: "HID 1.1"
+      match: true
+    service_uuid:
+      sdp_value: "0x1124 (HumanInterfaceDeviceService)"
+      code_usage: "HID profile"
+      match: true
+    descriptor_in_sdp:
+      embedded: true
+      sdp_attribute: "0x0206"
+      sdp_description: "Bluetooth HID Gamepad + Mouse + Motion"
+      detail: |
+        The SDP hex blob in attribute 0x0206 contains a composite descriptor
+        matching the concatenation of GAMEPAD + MOUSE + MOTION descriptors.
+        This is ALREADY the composite descriptor despite docs claiming otherwise.
+    service_name:
+      sdp_value: "Deck Controller"
+      code_default: "Deck Controller"
+      match: true
+    virtual_cable:
+      sdp_value: true
+      note: "Supports reconnection initiation"
+    boot_device:
+      sdp_value: false
+      note: "Correct — gamepad is not a boot device (keyboard/mouse boot protocol)"
+
+  issues:
+    - issue: "SDP has composite descriptor but ARCHITECTURE.md describes gamepad-only"
+      severity: documentation
+      detail: "SDP attribute 0x0206 hex blob already contains 3 Application Collections"
+
+# ═══════════════════════════════════════════════════════════════════
+# 5. COMPOSITE HID PLAN ASSESSMENT
+# ═══════════════════════════════════════════════════════════════════
+
+composite_hid_assessment:
+  feasibility: high
+  implementation_status:
+    phase_1_mouse: implemented
+    phase_2_back_buttons: implemented
+    phase_3_imu: implemented
+    phase_4_profiles: partially_implemented  # missing consumer control + quick-switch
+
+  technical_risks:
+    - risk_id: R1
+      description: "iOS composite gamepad recognition"
+      current_status: unmitigated
+      detail: |
+        No per-OS descriptor selection implemented. SDP always sends composite.
+        iOS GCExtendedGamepad MAY reject composite with vendor-specific collections.
+        Needs real-device testing.
+
+    - risk_id: R2
+      description: "IMU evdev availability across SteamOS versions"
+      current_status: mitigated
+      detail: |
+        IMUReader.find_imu_device() gracefully returns None if no device found.
+        main.py logs warning and continues without IMU. Proper degradation.
+
+    - risk_id: R3
+      description: "BT bandwidth with multiple report types"
+      current_status: partially_mitigated
+      detail: |
+        ProfileManager controls which reports are sent, reducing load.
+        But no explicit rate limiting per report type is implemented.
+        All reports fire on every input state change.
+
+    - risk_id: R5
+      description: "Steam EVIOCGRAB conflict"
+      current_status: unmitigated_critical
+      detail: |
+        input_reader.py grabs the device (EVIOCGRAB) but if Steam Client has
+        already grabbed it, the grab will fail silently (logs warning, continues
+        without exclusive grab). This means Steam could receive inputs simultaneously,
+        or the grab could fail entirely in Gaming Mode. No coordination with
+        Steam Input or lizard mode.
+
+  descriptor_budget:
+    gamepad_bytes: 89  # approximate from code
+    mouse_bytes: 67    # approximate from code
+    motion_bytes: 35   # approximate from code
+    total_bytes: 191
+    sdp_limit: 400
+    status: "well within budget (48% of limit)"
+
+# ═══════════════════════════════════════════════════════════════════
+# 6. ADR COMPLETENESS
+# ═══════════════════════════════════════════════════════════════════
+
+adr_assessment:
+  existing_adrs:
+    - id: "ADR-001"
+      title: "Bluetooth HID Emulation Strategy"
+      status: accepted
+      still_valid: true
+      notes: "Solid. Decision to use BlueZ CLI + L2CAP sockets is proven in code."
+
+    - id: "ADR-002"
+      title: "SteamOS Filesystem Strategy"
+      status: accepted
+      still_valid: true
+      notes: "Solid. Runtime-only modifications strategy is consistently applied."
+
+  missing_adrs:
+    - suggested_id: "ADR-003"
+      title: "Composite HID Device Strategy"
+      rationale: |
+        The decision to use multiple Application Collections with separate Report IDs
+        (vs. separate BT profiles, vs. UHID, vs. BLE) is a significant architectural
+        decision. The composite-hid-smart-mapping plan contains this context but it's
+        not formalized as an ADR.
+      alternatives_to_document:
+        - "Multiple Application Collections (chosen)"
+        - "Separate BT HID profiles per device type"
+        - "Single gamepad-only descriptor with software remapping on host"
+
+    - suggested_id: "ADR-004"
+      title: "Vendor-Specific Motion Report Strategy"
+      rationale: |
+        Decision to use Usage Page 0xFF00 (Vendor Specific) for gyro/accel instead
+        of standard HID sensor page (0x20) is a key compatibility trade-off.
+        SDL2 compatibility vs. native OS sensor APIs. iOS exclusion is documented
+        in plan but not in ADR.
+      alternatives_to_document:
+        - "Vendor-Specific 0xFF00 DualSense-style (chosen)"
+        - "HID Sensor Usage Page 0x20 (standard but poorly supported)"
+        - "No motion data (simplest)"
+
+    - suggested_id: "ADR-005"
+      title: "Profile System Design — Send-Side vs Descriptor-Side"
+      rationale: |
+        Decision that profiles control which Report IDs are sent (not which
+        descriptor is advertised) is fundamental. This means the descriptor
+        cannot change without re-pairing. Plan documents this but no ADR.
+
+# ═══════════════════════════════════════════════════════════════════
+# 7. DOCUMENTATION GAPS
+# ═══════════════════════════════════════════════════════════════════
+
+documentation_gaps:
+  critical:
+    - file: "docs/ARCHITECTURE.md"
+      gap: "Entire doc describes pre-composite gamepad-only architecture"
+      detail: |
+        Report structure table: 14 bytes / 16 buttons (code: 15 bytes / 20 buttons).
+        Component table: missing TrackpadMouse, IMUReader, ProfileManager.
+        Data flow: missing mouse and motion report paths.
+        State machine: missing profile switching states.
+        Technology stack: doesn't mention profile system or composite HID.
+
+    - file: "docs/BLUETOOTH.md"
+      gap: "Descriptor breakdown shows original 16-button layout only"
+      detail: |
+        Missing mouse collection (Report ID 0x02), motion collection (0x03).
+        Button mapping table missing R5 (bit 16) and back button evdev codes.
+        No mention of composite descriptor architecture.
+
+  moderate:
+    - file: "defaults/defaults.json"
+      gap: "Missing config keys used in code"
+      detail: |
+        Code references: mouse_sensitivity, scroll_sensitivity, gyro_sensitivity,
+        imu_poll_rate_hz. These have Python fallback defaults but should be in
+        defaults.json for discoverability.
+
+    - file: "docs/STEAMOS.md"
+      gap: "No mention of IMU device access on SteamOS"
+      detail: |
+        SteamOS constraints doc doesn't cover IMU evdev device availability,
+        which is a Phase 3 concern.
+
+    - file: "docs/DEVELOPMENT.md"
+      gap: "No mention of profile system or composite HID testing"
+      detail: |
+        Development guide doesn't cover testing profiles, mouse mode,
+        or IMU on Steam Deck.
+
+  low:
+    - file: "deck-controller-setup plan"
+      gap: "Plan status is 'pending' but all code exists"
+      detail: |
+        Every task in the setup plan has been implemented. The plan.yaml
+        status should be 'completed' or at least 'in_progress'.
+
+    - file: "composite-hid-smart-mapping plan"
+      gap: "Plan status is 'pending' but Phases 1-3 are fully implemented"
+      detail: "Phase 4 is partially implemented (profiles yes, consumer control no)."
+
+# ═══════════════════════════════════════════════════════════════════
+# 8. ROADMAP HEALTH
+# ═══════════════════════════════════════════════════════════════════
+
+roadmap:
+  overall_health: good
+  phases_completed:
+    - "Phase 1: Mouse via Trackpad — ✅ IMPLEMENTED"
+    - "Phase 2: Extended Gamepad (back buttons) — ✅ IMPLEMENTED"
+    - "Phase 3: Motion Sensor (IMU) — ✅ IMPLEMENTED"
+    - "Phase 4: Profile System — ⚠️ PARTIAL (profiles yes, consumer control + quick-switch no)"
+
+  remaining_work:
+    - item: "Consumer Control Report ID 0x04"
+      effort: small
+      blocker: false
+      detail: "New descriptor collection, pack function, and wiring. Low risk."
+
+    - item: "Quick-switch button combo"
+      effort: small
+      blocker: false
+      detail: "Intercept button combo in input_reader, call ProfileManager.cycle()."
+
+    - item: "iOS compatibility testing + mitigation"
+      effort: medium
+      blocker: false
+      detail: "Requires real iOS device. May need gamepad-only fallback mode."
+
+    - item: "Rate limiting per report type"
+      effort: small
+      blocker: false
+      detail: "Gamepad 250Hz, Mouse 125Hz, Motion 100Hz as planned."
+
+    - item: "Update ARCHITECTURE.md + BLUETOOTH.md for composite layout"
+      effort: medium
+      blocker: false
+      detail: "Significant rewrite needed to match current code."
+
+  blockers:
+    - blocker: "Steam EVIOCGRAB conflict in Gaming Mode"
+      severity: critical
+      detail: |
+        If user activates broadcasting while Steam is in Gaming Mode, Steam
+        likely holds EVIOCGRAB on the controller. The plugin's grab will fail.
+        Currently handled with a warning log, but user experience is unclear.
+        Needs investigation: does the plugin work without exclusive grab?
+        Does Steam release grab in Desktop Mode?
+
+# ═══════════════════════════════════════════════════════════════════
+# 9. INCONSISTENCIES BETWEEN DOCS
+# ═══════════════════════════════════════════════════════════════════
+
+inconsistencies:
+  - files: ["docs/ARCHITECTURE.md", "backend/hid_descriptor.py"]
+    issue: "Button count: 16 (docs) vs 20 (code)"
+    severity: high
+
+  - files: ["docs/ARCHITECTURE.md", "backend/hid_descriptor.py"]
+    issue: "Report size: 14 bytes (docs) vs 15 bytes (code)"
+    severity: high
+
+  - files: ["docs/ARCHITECTURE.md", "main.py"]
+    issue: "Components listed: 5 backend modules (docs) vs 7 (code adds TrackpadMouse, IMUReader, ProfileManager)"
+    severity: high
+
+  - files: ["docs/BLUETOOTH.md", "backend/hid_descriptor.py"]
+    issue: "Descriptor breakdown shows single gamepad collection; code has 3 collections"
+    severity: high
+
+  - files: ["docs/BLUETOOTH.md", "assets/gamepad_sdp.xml"]
+    issue: "BLUETOOTH.md shows 'Service Description: Bluetooth HID Gamepad'; SDP has 'Bluetooth HID Gamepad + Mouse + Motion'"
+    severity: low
+
+  - files: ["docs/ARCHITECTURE.md", "assets/gamepad_sdp.xml"]
+    issue: "ARCHITECTURE.md: 'HID parser version 1.1.1'; SDP has 0x0101 (v1.1) for profile, 0x0111 (1.1.1) for parser — correct but confusing"
+    severity: info
+
+  - files: ["defaults/defaults.json", "backend/config.py"]
+    issue: "config.py _load_defaults() includes gyro_sensitivity and imu_poll_rate_hz; defaults.json does not"
+    severity: moderate
+
+  - files: ["deck-controller-setup/plan.yaml", "plugin.json"]
+    issue: "Plan says 'flags: [\"_root\"]'; actual plugin.json has 'flags: [\"root\"]' (no underscore)"
+    severity: low  # may depend on DeckyLoader version
+
+  - files: ["deck-controller-setup/plan.yaml", "backend/bt_hid_service.py"]
+    issue: "Plan open_question mentions 'HID UUID 0x0011'; SDP correctly uses 0x1124 for HID service"
+    severity: info  # 0x0011 is HIDP protocol UUID, 0x1124 is service class — plan was confused
+
+# ═══════════════════════════════════════════════════════════════════
+# 10. RECOMMENDED NEXT ACTIONS (prioritized)
+# ═══════════════════════════════════════════════════════════════════
+
+recommended_actions:
+  - priority: 1
+    action: "Update ARCHITECTURE.md to reflect composite HID architecture"
+    effort: medium
+    impact: high
+    detail: |
+      Report structure, component table, data flow diagram, mermaid charts —
+      all need to show 20-button gamepad, mouse, motion, and profile system.
+
+  - priority: 2
+    action: "Update BLUETOOTH.md with composite descriptor breakdown"
+    effort: medium
+    impact: high
+    detail: |
+      Add mouse collection, motion collection, updated button table with
+      back button evdev codes, composite report structure.
+
+  - priority: 3
+    action: "Investigate and document Steam EVIOCGRAB behavior"
+    effort: medium
+    impact: critical
+    detail: |
+      Test on real Steam Deck: (a) Does grab fail in Gaming Mode?
+      (b) Does the plugin work without exclusive grab? (c) Does Desktop Mode
+      release the grab? Document findings and implement mitigation.
+
+  - priority: 4
+    action: "Add missing config keys to defaults/defaults.json"
+    effort: small
+    impact: moderate
+    detail: "Add mouse_sensitivity, scroll_sensitivity, gyro_sensitivity, imu_poll_rate_hz"
+
+  - priority: 5
+    action: "Implement Consumer Control Report ID 0x04"
+    effort: small
+    impact: moderate
+    detail: "Add descriptor, pack function, wire into Media profile."
+
+  - priority: 6
+    action: "Write ADR-003 (Composite HID Strategy)"
+    effort: small
+    impact: moderate
+    detail: "Formalize the multiple-Application-Collections decision."
+
+  - priority: 7
+    action: "Implement quick-switch button combo for profile cycling"
+    effort: small
+    impact: moderate
+    detail: "Steam+L4 or configurable combo in input_reader → ProfileManager."
+
+  - priority: 8
+    action: "Add per-report-type rate limiting"
+    effort: small
+    impact: low
+    detail: "Prevent BT bandwidth saturation. Timestamp-based throttle per Report ID."
+
+  - priority: 9
+    action: "Update plan.yaml statuses to reflect implementation reality"
+    effort: trivial
+    impact: low
+    detail: "deck-controller-setup → completed. composite-hid → phases 1-3 completed, phase 4 partial."
+
+  - priority: 10
+    action: "Test iOS compatibility with composite descriptor"
+    effort: medium
+    impact: medium
+    detail: "Real device test. May need ADR-003 amendment with iOS fallback mode."

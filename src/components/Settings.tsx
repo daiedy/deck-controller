@@ -91,6 +91,14 @@ export function Settings() {
         </PanelSectionRow>
       </PanelSection>
 
+      <PanelSection title="Back Buttons">
+        <PanelSectionRow>
+          <Field label="Back Buttons" description="L4, L5, R4, R5 mapped as HID buttons 14-17">
+            Enabled (always active)
+          </Field>
+        </PanelSectionRow>
+      </PanelSection>
+
       <PanelSection title="Bluetooth">
         <PanelSectionRow>
           <DropdownItem

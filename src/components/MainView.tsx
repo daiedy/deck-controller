@@ -1,5 +1,6 @@
 import { PanelSection, PanelSectionRow, ButtonItem, Field } from "@decky/ui";
 import { useBackend } from "../hooks/useBackend";
+import { ProfilePicker } from "./ProfilePicker";
 
 const STATE_LABELS: Record<string, string> = {
   idle: "Idle",
@@ -65,6 +66,8 @@ export function MainView() {
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
+
+      <ProfilePicker />
     </>
   );
 }

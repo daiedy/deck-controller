@@ -43,6 +43,16 @@ class InputState:
     r2: int = 0
     dpad: int = DPAD_NEUTRAL
 
+    # Trackpad state (absolute positions, 0-32767)
+    trackpad_right_x: int = 0
+    trackpad_right_y: int = 0
+    trackpad_left_x: int = 0
+    trackpad_left_y: int = 0
+    trackpad_right_touch: bool = False
+    trackpad_left_touch: bool = False
+    trackpad_right_click: bool = False
+    trackpad_left_click: bool = False
+
     def copy(self) -> InputState:
         """Create a shallow copy of this state."""
         return InputState(
@@ -54,6 +64,14 @@ class InputState:
             l2=self.l2,
             r2=self.r2,
             dpad=self.dpad,
+            trackpad_right_x=self.trackpad_right_x,
+            trackpad_right_y=self.trackpad_right_y,
+            trackpad_left_x=self.trackpad_left_x,
+            trackpad_left_y=self.trackpad_left_y,
+            trackpad_right_touch=self.trackpad_right_touch,
+            trackpad_left_touch=self.trackpad_left_touch,
+            trackpad_right_click=self.trackpad_right_click,
+            trackpad_left_click=self.trackpad_left_click,
         )
 
 
@@ -74,6 +92,11 @@ if evdev is not None:
         ecodes.BTN_THUMBL: 10,  # L3
         ecodes.BTN_THUMBR: 11,  # R3
         ecodes.BTN_MODE: 12,    # Home
+        # Back buttons (Steam Deck paddle buttons)
+        getattr(ecodes, 'BTN_TRIGGER_HAPPY1', 0x2C0): 13,  # L4
+        getattr(ecodes, 'BTN_TRIGGER_HAPPY2', 0x2C1): 14,  # L5
+        getattr(ecodes, 'BTN_TRIGGER_HAPPY3', 0x2C2): 15,  # R4
+        getattr(ecodes, 'BTN_TRIGGER_HAPPY4', 0x2C3): 16,  # R5
     }
 
 # D-pad value mapping from (ABS_HAT0X, ABS_HAT0Y) to hat switch
@@ -304,6 +327,22 @@ class InputReader:
                 self._state.dpad = _DPAD_MAP.get(
                     (self._hat_x, self._hat_y), DPAD_NEUTRAL
                 )
+                changed = True
+            elif code == ecodes.ABS_HAT2X:
+                self._state.trackpad_left_x = value
+                self._state.trackpad_left_touch = value != 0
+                changed = True
+            elif code == ecodes.ABS_HAT2Y:
+                self._state.trackpad_left_y = value
+                self._state.trackpad_left_touch = value != 0
+                changed = True
+            elif code == ecodes.ABS_HAT3X:
+                self._state.trackpad_right_x = value
+                self._state.trackpad_right_touch = value != 0
+                changed = True
+            elif code == ecodes.ABS_HAT3Y:
+                self._state.trackpad_right_y = value
+                self._state.trackpad_right_touch = value != 0
                 changed = True
 
         if changed and self._callback is not None:

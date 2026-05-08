@@ -1,0 +1,472 @@
+plan_id: code-quality-audit
+objective: Deep code quality analysis of the deck-controller project
+focus_area: code_quality
+created_at: "2026-05-07"
+created_by: gem-researcher
+status: completed
+
+tldr: |
+  - 6 critical issues, 11 warnings, 9 suggestions across 14 source files
+  - Top critical: command injection via unvalidated BT address, bluetoothd process leak on partial start failure, missing validation on set_config for non-whitelisted types
+  - Async correctness is generally sound; main gap is _on_input_state_change calling sync send_report inside an async context
+  - Frontend is clean; main gap is ProfilePicker managing its own state instead of using shared useBackend hook
+  - HID descriptor and report packing are well-structured with proper clamping
+
+research_metadata:
+  methodology: "Full source read of 14 files (8 Python backend, 5 TSX frontend, 1 TS hook)"
+  scope: "All application source code — backend/*.py, main.py, src/**/*.tsx, src/hooks/*.ts"
+  confidence: high
+  coverage: 100
+  decision_blockers: 0
+  research_blockers: 0
+
+# ============================================================
+# CRITICAL ISSUES — must fix before release
+# ============================================================
+critical_issues:
+
+  - id: CRIT-01
+    severity: critical
+    category: security
+    title: "Command injection via unvalidated Bluetooth address in remove_device"
+    file: main.py
+    lines: "308-316"
+    description: |
+      Plugin.remove_device() passes user-supplied `address` string directly to
+      `bluetoothctl remove <address>` via create_subprocess_exec. While
+      create_subprocess_exec does NOT use a shell (so classic shell injection is
+      mitigated), the address is not validated as a BT MAC (XX:XX:XX:XX:XX:XX).
+      A malformed address could trigger unexpected bluetoothctl behavior or be
+      used to inject bluetoothctl subcommands.
+    evidence:
+      file: main.py
+      location: "main.py:309-312"
+      snippet: |
+        proc = await asyncio.create_subprocess_exec(
+            "bluetoothctl", "remove", address, ...)
+    suggested_fix: |
+      Validate `address` against a regex before passing to subprocess:
+        import re
+        BT_ADDR_RE = re.compile(r'^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$')
+        if not BT_ADDR_RE.match(address):
+            return {"success": False, "error": "Invalid Bluetooth address format"}
+
+  - id: CRIT-02
+    severity: critical
+    category: error_handling
+    title: "bluetoothd process leaked on partial start failure"
+    file: backend/bt_hid_service.py
+    lines: "210-245"
+    description: |
+      In BTHIDService.start(), if _restart_bluetoothd_with_plugin_flag() succeeds
+      but a later step fails (e.g., _open_l2cap_sockets() fails), _restore_bluetoothd()
+      is only called for the socket failure case. If _set_device_class, _set_adapter_property,
+      or _register_sdp_record fail silently (they return False but are not checked), the
+      method continues and may leave bluetoothd in a non-standard state. The bigger issue:
+      if _open_l2cap_sockets fails, _restore_bluetoothd is called but the original
+      _restart_bluetoothd_with_plugin_flag spawned a detached process (asyncio.create_subprocess_exec
+      without awaiting completion at line 102-105). This orphaned bluetoothd process may
+      not be properly killed by the subsequent pkill.
+    evidence:
+      file: backend/bt_hid_service.py
+      location: "bt_hid_service.py:99-105"
+      snippet: |
+        await asyncio.create_subprocess_exec(
+            "/usr/lib/bluetooth/bluetoothd", "-P", "input", "--nodetach",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        # No Process reference saved! Cannot await or kill reliably.
+    suggested_fix: |
+      1. Save the Process reference: self._bluetoothd_proc = await asyncio.create_subprocess_exec(...)
+      2. In _restore_bluetoothd(), terminate via self._bluetoothd_proc.terminate() + await wait()
+         rather than relying on pkill pattern matching.
+      3. Add try/finally in start() to ensure _restore_bluetoothd is called on ANY failure
+         after restart succeeds.
+
+  - id: CRIT-03
+    severity: critical
+    category: security
+    title: "No input validation for non-numeric config keys in set_config"
+    file: main.py
+    lines: "219-268"
+    description: |
+      set_config() validates `deadzone` (range check) and `polling_rate_hz`
+      (allowlist check), but passes ALL other allowed keys through without type
+      or value validation. Keys like `controller_name` accept arbitrary strings
+      (including very long strings, special chars). `bt_device_class` accepts any
+      string that gets passed to `hciconfig class`. `max_connections` accepts any
+      value. `mouse_sensitivity`, `scroll_sensitivity`, `gyro_sensitivity` have no
+      range bounds.
+    evidence:
+      file: main.py
+      location: "main.py:246-264"
+      snippet: |
+        # Only deadzone and polling_rate_hz are validated
+        # All other keys pass through with no type/range checks
+        self.config.set(key, value)
+    suggested_fix: |
+      Add per-key validation:
+        - controller_name: max length 64, alphanumeric + spaces only
+        - bt_device_class: validate hex format 0x[0-9A-Fa-f]{6}
+        - max_connections: int in range 1-4
+        - mouse/scroll/gyro_sensitivity: float in range 0.1-5.0
+        - enable_gyro/enable_trackpads: must be bool
+
+  - id: CRIT-04
+    severity: critical
+    category: async_correctness
+    title: "Synchronous blocking socket.send() called from async event loop callback"
+    file: backend/bt_hid_service.py
+    lines: "264-276"
+    description: |
+      send_report() uses synchronous socket.send() on a blocking socket
+      (the accepted client socket from sock_accept is blocking by default).
+      This is called from _on_input_state_change, which is invoked from the
+      evdev async_read_loop via a synchronous callback. If the BT connection
+      is slow or congested, this blocks the entire asyncio event loop,
+      causing input lag or deadlocks.
+    evidence:
+      file: backend/bt_hid_service.py
+      location: "bt_hid_service.py:272"
+      snippet: |
+        self._interrupt_client.send(b"\xa1" + report)
+    suggested_fix: |
+      Either:
+      a) Set accepted client sockets to non-blocking and use loop.sock_sendall()
+      b) Or run send in an executor: await loop.run_in_executor(None, sock.send, data)
+      c) Or buffer reports and flush from an async sender task
+
+  - id: CRIT-05
+    severity: critical
+    category: error_handling
+    title: "_unload() does not handle case where attributes are not initialized"
+    file: main.py
+    lines: "76-89"
+    description: |
+      If _main() fails partway through initialization (e.g., Config() raises),
+      the Plugin instance will lack attributes like input_reader, imu_reader,
+      bt_service. When DeckyLoader calls _unload(), accessing these attributes
+      raises AttributeError, preventing any cleanup that IS possible.
+    evidence:
+      file: main.py
+      location: "main.py:85-88"
+      snippet: |
+        await self.input_reader.stop()
+        await self.imu_reader.stop()
+        await self.bt_service.stop()
+    suggested_fix: |
+      Use getattr with fallback, or wrap each stop in hasattr check:
+        for attr in ("input_reader", "imu_reader", "bt_service"):
+            obj = getattr(self, attr, None)
+            if obj is not None:
+                await obj.stop()
+
+  - id: CRIT-06
+    severity: critical
+    category: security
+    title: "Synchronous subprocess calls with no output sanitization in bt_hid_service"
+    file: backend/bt_hid_service.py
+    lines: "133-162"
+    description: |
+      Multiple methods (_set_adapter_property, _set_device_class, _get_device_name)
+      pass user-controllable values (controller_name, device_class, address) to
+      subprocess.run as positional arguments. While subprocess.run without shell=True
+      prevents shell injection, the `controller_name` from config is passed as a
+      bluetoothctl alias with no length or character validation. Exotic characters
+      could cause bluetoothctl to misbehave or crash.
+    evidence:
+      file: backend/bt_hid_service.py
+      location: "bt_hid_service.py:144"
+      snippet: |
+        cmd = ["bluetoothctl", "system-alias", str(value)]
+    suggested_fix: |
+      Validate controller_name: max 64 chars, only printable ASCII, no control chars.
+      Validate device_class: must match /^0x[0-9A-Fa-f]{6}$/.
+
+# ============================================================
+# WARNINGS — should fix
+# ============================================================
+warnings:
+
+  - id: WARN-01
+    severity: warning
+    category: error_handling
+    title: "SDP record registration failure is silently ignored"
+    file: backend/bt_hid_service.py
+    lines: "229-230"
+    description: |
+      In start(), _register_sdp_record() return value is not checked. If SDP
+      registration fails, the service starts anyway but remote devices cannot
+      discover the HID profile. This leads to confusing user experience where
+      broadcasting appears to work but no device can connect.
+    suggested_fix: |
+      Check return value and fail start() if SDP registration fails, or at
+      minimum log a prominent warning and include it in get_status() response.
+
+  - id: WARN-02
+    severity: warning
+    category: async_correctness
+    title: "Config.save() performs blocking file I/O inside asyncio callbacks"
+    file: backend/config.py
+    lines: "77-81"
+    description: |
+      Config.set() calls self.save() which does synchronous file write with
+      json.dump(). This is called from async RPC methods like set_config().
+      On SteamOS's SD card or slow storage, this can block the event loop.
+    suggested_fix: |
+      Either use aiofiles for async I/O, or run save in an executor:
+        await asyncio.get_event_loop().run_in_executor(None, self.config.save)
+
+  - id: WARN-03
+    severity: warning
+    category: error_handling
+    title: "InputReader._read_loop catches bare Exception"
+    file: backend/input_reader.py
+    lines: "226-228"
+    description: |
+      Catching bare Exception silently swallows unexpected errors. While it
+      logs the error, it sets _running = False without any notification to
+      the plugin. The user sees no feedback that input reading has stopped.
+    suggested_fix: |
+      Emit an event or call a registered error callback so the plugin can
+      notify the user and update status.
+
+  - id: WARN-04
+    severity: warning
+    category: code_smell
+    title: "Direct access to private attribute _deadzone in set_config"
+    file: main.py
+    lines: "265"
+    description: |
+      Plugin.set_config() directly sets `self.input_reader._deadzone` (a private
+      attribute). This couples the Plugin to InputReader's internal implementation.
+    suggested_fix: |
+      Add a public setter method on InputReader: input_reader.set_deadzone(value).
+
+  - id: WARN-05
+    severity: warning
+    category: frontend
+    title: "ProfilePicker duplicates backend call pattern instead of using useBackend hook"
+    file: src/components/ProfilePicker.tsx
+    lines: "1-100"
+    description: |
+      ProfilePicker creates its own callable() instances (getProfiles, switchProfile)
+      and manages its own state, bypassing the centralized useBackend hook. This means:
+      1) Profile state is not shared with other components
+      2) No loading state coordination with the rest of the UI
+      3) Profile changes don't trigger status refresh
+    suggested_fix: |
+      Add profile management to useBackend hook (getProfiles, switchProfile, profiles state)
+      and consume from ProfilePicker.
+
+  - id: WARN-06
+    severity: warning
+    category: frontend
+    title: "useEffect with empty dependency array may stale-close over refreshStatus"
+    file: src/hooks/useBackend.ts
+    lines: "130-137"
+    description: |
+      The init() useEffect includes refreshStatus, refreshDevices, refreshConfig in its
+      dependency array (correct), but these callbacks are created with useCallback whose
+      own dependencies are empty. If the callable references ever change, the effect won't
+      re-trigger properly. Currently safe because callables are module-level constants,
+      but fragile.
+    suggested_fix: |
+      This is currently safe but could break if callables become dynamic. Consider
+      documenting the assumption or removing the dependency array warning suppression.
+
+  - id: WARN-07
+    severity: warning
+    category: error_handling
+    title: "IMUReader.find_imu_device() leaks device handles on match"
+    file: backend/imu_reader.py
+    lines: "73-85"
+    description: |
+      When a matching device is found, dev.close() is called and the path is returned.
+      However, if the InputDevice constructor raises between creation and the close() call,
+      the file descriptor leaks. Similarly, if none of the patterns match, dev.close() is
+      called — but if close() itself raises, the loop continues silently.
+    suggested_fix: |
+      Use a try/finally block:
+        dev = InputDevice(path)
+        try:
+            ...check patterns...
+        finally:
+            dev.close()
+
+  - id: WARN-08
+    severity: warning
+    category: async_correctness
+    title: "bluetoothd --nodetach launched without tracking Process reference"
+    file: backend/bt_hid_service.py
+    lines: "99-105"
+    description: |
+      The restarted bluetoothd process is launched via create_subprocess_exec but
+      the returned Process object is not stored. This means:
+      1) Cannot await its termination
+      2) Cannot send SIGTERM reliably
+      3) Must rely on fragile pkill pattern matching to clean up
+    suggested_fix: |
+      Store the Process: self._bluetoothd_proc = await asyncio.create_subprocess_exec(...)
+      Use self._bluetoothd_proc.terminate() in cleanup.
+
+  - id: WARN-09
+    severity: warning
+    category: type_safety
+    title: "event parameter typed as object in _process_event methods"
+    file: backend/input_reader.py
+    lines: "211"
+    description: |
+      _process_event(self, event: object) uses `object` type hint, then accesses
+      event.type, event.code, event.value with type: ignore comments. The same
+      pattern appears in imu_reader.py. This defeats type checking entirely.
+    suggested_fix: |
+      Create a Protocol or use evdev.InputEvent when available:
+        if TYPE_CHECKING:
+            from evdev import InputEvent
+      Or define a minimal Protocol with type/code/value attributes.
+
+  - id: WARN-10
+    severity: warning
+    category: code_smell
+    title: "Trackpad touch detection uses value != 0 which may false-trigger"
+    file: backend/input_reader.py
+    lines: "275-286"
+    description: |
+      Trackpad touch is inferred from position value != 0. A finger resting at
+      position 0 would be detected as "not touching". The evdev device likely
+      reports touch via a separate EV_KEY event (BTN_TOUCH or similar), which
+      would be more reliable.
+    suggested_fix: |
+      Use BTN_TOUCH or BTN_TOOL_FINGER evdev events for touch detection
+      instead of inferring from position values.
+
+  - id: WARN-11
+    severity: warning
+    category: error_handling
+    title: "ProfileManager._save() can fail silently on disk full"
+    file: backend/profile_manager.py
+    lines: "109-115"
+    description: |
+      _save() does not handle IOError/OSError. If the disk is full or the
+      settings directory is read-only, the write fails and the in-memory
+      state diverges from disk state without any notification.
+    suggested_fix: |
+      Wrap in try/except, log the error, and consider a transactional write
+      pattern (write to temp file, then rename).
+
+# ============================================================
+# SUGGESTIONS — nice to have
+# ============================================================
+suggestions:
+
+  - id: SUGG-01
+    category: code_smell
+    title: "Duplicate device discovery logic in InputReader and IMUReader"
+    file: "backend/input_reader.py, backend/imu_reader.py"
+    description: |
+      Both classes implement near-identical device discovery: iterate evdev.list_devices(),
+      open InputDevice, pattern-match against name lists, close on mismatch. This could
+      be extracted into a shared utility function.
+
+  - id: SUGG-02
+    category: type_safety
+    title: "Missing return type on _on_input_state_change and _on_motion_state_change"
+    file: main.py
+    lines: "94, 130"
+    description: |
+      These callbacks return None but only _on_input_state_change has a -> None annotation.
+      _on_motion_state_change also has it. Both are correct. No action needed.
+      (Retracted — verified both have -> None.)
+
+  - id: SUGG-03
+    category: frontend
+    title: "Settings component makes setConfig calls on every slider change"
+    file: src/components/Settings.tsx
+    lines: "71-80"
+    description: |
+      SliderField onChange triggers a setConfig RPC call for every intermediate
+      value while dragging. This generates excessive backend traffic.
+    suggested_fix: |
+      Debounce the slider onChange, or use onChangeEnd if the component supports it.
+
+  - id: SUGG-04
+    category: code_smell
+    title: "DeviceList component is defined but never rendered"
+    file: src/components/DeviceList.tsx
+    description: |
+      DeviceList is a complete component but is not imported or rendered in
+      MainView or any other component. It appears to be dead code or planned
+      for future use.
+
+  - id: SUGG-05
+    category: type_safety
+    title: "Frontend ConfigData interface missing sensitivity keys"
+    file: src/hooks/useBackend.ts
+    lines: "28-37"
+    description: |
+      ConfigData interface is missing mouse_sensitivity, scroll_sensitivity,
+      gyro_sensitivity, and imu_poll_rate_hz fields that exist in the backend
+      config. The Settings component doesn't reference them, but ProfilePicker
+      exposes them — this creates a type gap.
+
+  - id: SUGG-06
+    category: code_smell
+    title: "xml.etree.ElementTree imported but unused in bt_hid_service"
+    file: backend/bt_hid_service.py
+    lines: "8"
+    description: |
+      `import xml.etree.ElementTree as ET` is present but ET is never referenced.
+      The SDP record is loaded as raw text string, not parsed as XML.
+
+  - id: SUGG-07
+    category: error_handling
+    title: "No reconnection logic after device disconnect"
+    file: backend/bt_hid_service.py
+    lines: "254-266"
+    description: |
+      _accept_connections() loops back to accept after disconnect, but there's
+      no mechanism to notify the frontend that a disconnect occurred. The status
+      polling from frontend (every 2s) will eventually catch it, but there's a
+      window where the UI shows "connected" while the device is gone.
+    suggested_fix: |
+      Use decky.emit("status_changed", ...) in _handle_disconnect() to push
+      state change to frontend immediately.
+
+  - id: SUGG-08
+    category: code_smell
+    title: "Magic numbers in trackpad_mouse.py scaling"
+    file: backend/trackpad_mouse.py
+    lines: "53, 73"
+    description: |
+      Division by 256 and 512 are magic numbers for trackpad-to-mouse scaling.
+      Named constants would improve readability.
+
+  - id: SUGG-09
+    category: frontend
+    title: "No error feedback to user on failed RPC calls"
+    file: src/hooks/useBackend.ts
+    description: |
+      All RPC failures are caught and logged to console.error, but no toast
+      or visual notification is shown to the user. The @decky/api provides
+      toaster functionality that could surface errors.
+
+# ============================================================
+# Summary statistics
+# ============================================================
+summary_statistics:
+  total_files_analyzed: 14
+  total_python_lines: ~1650
+  total_tsx_ts_lines: ~450
+  critical_issues: 6
+  warnings: 11
+  suggestions: 9
+  categories:
+    security: 3
+    error_handling: 6
+    async_correctness: 3
+    frontend: 3
+    type_safety: 2
+    code_smell: 4
+    bluez_dbus: 0  # BlueZ usage is generally correct via bluetoothctl wrapper

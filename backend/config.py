@@ -52,6 +52,8 @@ class Config:
                 "enable_trackpads": False,
                 "bt_device_class": "0x002508",
                 "max_connections": 1,
+                "gyro_sensitivity": 1.0,
+                "imu_poll_rate_hz": 100,
             }
 
     def _load(self) -> None:
