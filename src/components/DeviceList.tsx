@@ -15,10 +15,7 @@ export function DeviceList() {
       ) : (
         devices.map((device) => (
           <PanelSectionRow key={device.address}>
-            <Field
-              label={device.name}
-              description={device.address}
-            >
+            <Field label={device.name} description={device.address}>
               <ButtonItem
                 layout="below"
                 disabled={isLoading}
@@ -35,11 +32,7 @@ export function DeviceList() {
       )}
 
       <PanelSectionRow>
-        <ButtonItem
-          layout="below"
-          disabled={isLoading}
-          onClick={() => actions.refreshDevices()}
-        >
+        <ButtonItem layout="below" disabled={isLoading} onClick={() => actions.refreshDevices()}>
           Refresh
         </ButtonItem>
       </PanelSectionRow>

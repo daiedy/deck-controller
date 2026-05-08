@@ -16,3 +16,4 @@ docs/.reviews/launchd-*.log
 
 # Wiki checkout (local only)
 .wiki-checkout/
+.coverage

@@ -1,4 +1,7 @@
-.PHONY: build clean deploy init lint verify
+.PHONY: build clean deploy init lint verify test test-py test-ts format hooks-install hooks-run
+
+PYTHON := .venv/bin/python
+PIP := .venv/bin/pip
 
 build:
 	pnpm i
@@ -8,12 +11,33 @@ clean:
 	rm -rf dist/ out/ node_modules/
 
 lint:
-	black --check backend/ main.py
-	isort --check-only --profile black backend/ main.py
-	flake8 backend/ main.py --max-line-length 100
-	mypy backend/ main.py --ignore-missing-imports
+	$(PYTHON) -m black --check backend/ main.py
+	$(PYTHON) -m isort --check-only --profile black backend/ main.py
+	$(PYTHON) -m flake8 backend/ main.py --max-line-length 100
+	$(PYTHON) -m mypy backend/ main.py --ignore-missing-imports
+	pnpm exec eslint src/
+	pnpm exec prettier --check src/
 
-verify: lint build
+test-py:
+	$(PYTHON) -m pytest --tb=short -q
+
+test-ts:
+	pnpm exec vitest run
+
+test: test-py test-ts
+
+format:
+	$(PYTHON) -m black backend/ main.py
+	$(PYTHON) -m isort backend/ main.py
+	pnpm exec prettier --write src/
+
+hooks-install:
+	$(PYTHON) -m pre_commit install
+
+hooks-run:
+	$(PYTHON) -m pre_commit run --all-files
+
+verify: lint test build
 	@echo "=== Checking plugin structure ==="
 	@test -f plugin.json || (echo "FAIL: plugin.json missing" && exit 1)
 	@test -f main.py || (echo "FAIL: main.py missing" && exit 1)

@@ -1,0 +1,1123 @@
+plan_id: testing-precommit-setup
+objective: >
+  Add comprehensive test coverage (Python + TypeScript) and local pre-commit hooks
+  to the deck-controller project. Zero tests and zero hooks exist today.
+created_at: "2026-05-08"
+created_by: gem-planner
+status: pending
+research_confidence: high
+
+plan_metrics:
+  wave_1_task_count: 3
+  total_dependencies: 21
+  risk_score: low
+
+tldr: |
+  13-task plan across 6 waves. Wave 1 creates all config/infrastructure files
+  (pyproject.toml, ESLint, Prettier, vitest). Waves 2-4 add tests from simple→complex:
+  pure functions first, then evdev-mocked modules, then the complex BT service and
+  main.py orchestrator. Wave 5 wires pre-commit hooks. Wave 6 adds docs.
+  ~35 new files, ~1800 lines of test + config code.
+
+open_questions: []
+
+gaps: []
+
+pre_mortem:
+  overall_risk_level: low
+  critical_failure_modes:
+    - scenario: "evdev mock complexity causes test flakiness"
+      likelihood: medium
+      impact: medium
+      mitigation: >
+        Test only InputState/MotionState dataclasses and _apply_deadzone pure function
+        directly; mock evdev.InputDevice at class level with simple event sequences.
+    - scenario: "@decky/ui component mocking breaks on version updates"
+      likelihood: low
+      impact: low
+      mitigation: >
+        Use shallow rendering with simple mock stubs that pass through children.
+        Pin @testing-library versions in devDependencies.
+    - scenario: "pre-commit hooks slow down developer workflow"
+      likelihood: medium
+      impact: low
+      mitigation: >
+        Run only staged-file checks (not full suite). Use --staged flags.
+        Keep pre-commit fast (<15s). Add skip instructions in docs.
+  assumptions:
+    - "Dev machine has Python 3.10+ with venv support"
+    - "pnpm is installed globally"
+    - "Tests run on dev machine only — NOT on SteamOS device"
+    - "evdev, socket(AF_BLUETOOTH), dbus are NOT available on dev machine — all mocked"
+    - "pre-commit framework can be pip-installed in project venv"
+
+implementation_specification:
+  code_structure: |
+    tests/                      # Python test root
+      conftest.py               # Shared fixtures (tmp_path wrappers, mock factories)
+      backend/
+        __init__.py
+        test_hid_descriptor.py
+        test_trackpad_mouse.py
+        test_config.py
+        test_profile_manager.py
+        test_input_reader.py
+        test_imu_reader.py
+        test_bt_hid_service.py
+      test_main.py
+    src/
+      __mocks__/
+        decky-api.ts            # @decky/api mock (callable, definePlugin, staticClasses)
+        decky-ui.ts             # @decky/ui mock (PanelSection, ButtonItem, Field, etc.)
+      __tests__/
+        hooks/
+          useBackend.test.ts
+        components/
+          MainView.test.tsx
+          DeviceList.test.tsx
+          ProfilePicker.test.tsx
+          Settings.test.tsx
+    pyproject.toml              # pytest, black, isort, mypy, flake8-pyproject config
+    vitest.config.ts            # vitest configuration
+    eslint.config.js            # flat config ESLint for TypeScript
+    .prettierrc                 # Prettier config
+    .pre-commit-config.yaml     # pre-commit framework config
+
+  affected_areas:
+    - "package.json (new devDependencies + test/lint scripts)"
+    - "Makefile (new test/format targets, updated lint target)"
+    - "tsconfig.json (possibly add test include)"
+
+  component_details:
+    - component: "Python test infrastructure"
+      responsibility: "pyproject.toml config, conftest.py fixtures, pytest-asyncio setup"
+      interfaces: ["pytest CLI", "Makefile targets"]
+      dependencies:
+        - component: "backend/ modules"
+          relationship: "test subjects"
+      integration_points: ["pre-commit hooks", "Makefile test target"]
+
+    - component: "TypeScript test infrastructure"
+      responsibility: "vitest config, @decky mocks, test utilities"
+      interfaces: ["vitest CLI", "pnpm test script"]
+      dependencies:
+        - component: "src/ modules"
+          relationship: "test subjects"
+      integration_points: ["pre-commit hooks", "package.json test script"]
+
+    - component: "Pre-commit hooks"
+      responsibility: "Run lint + tests on staged files before commit"
+      interfaces: ["git hooks", ".pre-commit-config.yaml"]
+      dependencies:
+        - component: "Python test infrastructure"
+          relationship: "runs pytest on staged .py files"
+        - component: "TypeScript test infrastructure"
+          relationship: "runs vitest on staged .ts/.tsx files"
+      integration_points: ["git commit workflow"]
+
+contracts:
+  - from_task: T1
+    to_task: T4
+    interface: "pyproject.toml exists with [tool.pytest.ini_options] section"
+    format: "TOML file at repo root"
+
+  - from_task: T1
+    to_task: T5
+    interface: "pyproject.toml exists with pytest config"
+    format: "TOML file at repo root"
+
+  - from_task: T1
+    to_task: T6
+    interface: "pyproject.toml exists with pytest config"
+    format: "TOML file at repo root"
+
+  - from_task: T3
+    to_task: T9
+    interface: "vitest.config.ts + @decky mock modules exist"
+    format: "vitest config + src/__mocks__/ directory"
+
+  - from_task: T4
+    to_task: T7
+    interface: "conftest.py with mock_evdev_device fixture pattern"
+    format: "tests/conftest.py pytest fixtures"
+
+  - from_task: T4
+    to_task: T8
+    interface: "conftest.py with mock_evdev_device fixture pattern"
+    format: "tests/conftest.py pytest fixtures"
+
+  - from_task: T7
+    to_task: T10
+    interface: "evdev mocking patterns established in test_input_reader.py"
+    format: "Mock patterns for InputDevice, list_devices"
+
+  - from_task: T6
+    to_task: T11
+    interface: "Config/ProfileManager test patterns for mocking"
+    format: "Mock patterns for Config and ProfileManager"
+
+  - from_task: T10
+    to_task: T12
+    interface: "All backend + frontend tests pass"
+    format: "pytest + vitest exit 0"
+
+tasks:
+  # ================================================================
+  # WAVE 1: Infrastructure — Config Files
+  # ================================================================
+  - id: T1
+    title: "Create pyproject.toml with Python tool configs"
+    description: |
+      Create pyproject.toml at repo root consolidating all Python tool configuration.
+      This replaces the inline flags in Makefile with proper config file settings.
+
+      File: pyproject.toml
+      Sections:
+        [project] — name, version, requires-python = ">=3.10"
+        [tool.pytest.ini_options] — testpaths = ["tests"], asyncio_mode = "auto"
+        [tool.black] — line-length = 100, target-version = ["py310"]
+        [tool.isort] — profile = "black", line_length = 100
+        [tool.mypy] — python_version = "3.10", ignore_missing_imports = true, strict = false
+        [tool.flake8] — max-line-length = 100, extend-ignore = ["E203", "W503"]
+          (Note: flake8 doesn't read pyproject.toml natively — use flake8-pyproject or .flake8)
+        [tool.pytest.ini_options] — markers for slow tests
+
+      Also create a .flake8 file since flake8 doesn't support pyproject.toml natively
+      (unless flake8-pyproject is installed — include it in dev deps).
+
+      Dev dependencies to document (installed via pip):
+        pytest, pytest-asyncio, pytest-cov, black, isort, flake8, mypy, pre-commit
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: ["pyproject.toml", ".flake8"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: Makefile
+        description: "Current lint target with inline flags to consolidate"
+      - path: defaults/defaults.json
+        description: "Reference for project metadata"
+    estimated_effort: small
+    estimated_files: 2
+    estimated_lines: 80
+    focus_area: "Python tooling configuration"
+    verification:
+      - "pyproject.toml is valid TOML (python -c 'import tomllib; ...')"
+      - "black --check backend/ main.py passes with pyproject.toml config"
+      - "isort --check-only backend/ main.py passes"
+      - "mypy backend/ main.py passes"
+    acceptance_criteria:
+      - "pyproject.toml exists with [tool.pytest.ini_options], [tool.black], [tool.isort], [tool.mypy]"
+      - ".flake8 file exists with max-line-length = 100"
+      - "All lint tools pick up config from files (no inline flags needed)"
+    failure_modes:
+      - scenario: "flake8 ignores pyproject.toml"
+        likelihood: medium
+        impact: low
+        mitigation: "Use .flake8 file instead of pyproject.toml for flake8 config"
+    tech_stack: ["python", "toml"]
+    test_coverage: null
+    requires_review: false
+
+  - id: T2
+    title: "Create ESLint + Prettier configs for TypeScript"
+    description: |
+      Set up frontend linting and formatting with ESLint flat config and Prettier.
+
+      Files to create:
+        eslint.config.js — flat config format (ESLint 9+)
+          - typescript-eslint parser + plugin
+          - react + react-hooks plugins
+          - rules: no-unused-vars (warn), react/react-in-jsx-scope (off for react-jsx)
+          - ignores: ["dist/", "node_modules/", "*.js" (except config)]
+
+        .prettierrc — JSON format
+          - semi: true, singleQuote: false, tabWidth: 2, trailingComma: "all"
+          - printWidth: 100
+
+      Modify package.json:
+        - Add devDependencies: eslint, @typescript-eslint/parser, @typescript-eslint/eslint-plugin,
+          eslint-plugin-react, eslint-plugin-react-hooks, prettier
+        - Add scripts: "lint:ts": "eslint src/", "format": "prettier --check src/"
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: ["eslint.config.js", ".prettierrc", "package.json scripts"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: package.json
+        description: "Current deps and scripts to extend"
+      - path: tsconfig.json
+        description: "TypeScript settings for ESLint parser"
+      - path: rollup.config.js
+        description: "Build config — external modules to consider"
+    estimated_effort: small
+    estimated_files: 3
+    estimated_lines: 80
+    focus_area: "TypeScript linting and formatting"
+    verification:
+      - "pnpm exec eslint src/ runs without config errors"
+      - "pnpm exec prettier --check src/ runs without config errors"
+    acceptance_criteria:
+      - "eslint.config.js exists with TypeScript + React rules"
+      - ".prettierrc exists"
+      - "package.json has lint:ts and format scripts"
+      - "ESLint treats @decky/ui and @decky/api as external (no import errors)"
+    failure_modes: []
+    tech_stack: ["typescript", "eslint", "prettier"]
+    test_coverage: null
+    requires_review: false
+
+  - id: T3
+    title: "Set up vitest config and @decky mock modules"
+    description: |
+      Configure vitest as the frontend test runner and create mock modules for
+      @decky/api and @decky/ui that all component/hook tests will use.
+
+      Files to create:
+        vitest.config.ts:
+          - test.environment: "jsdom"
+          - test.globals: true
+          - test.include: ["src/**/*.test.{ts,tsx}"]
+          - resolve.alias: { "@/*": "src/*" }
+
+        src/__mocks__/decky-api.ts:
+          Mock exports: callable (returns jest.fn that resolves), definePlugin,
+          staticClasses, routerHook
+
+        src/__mocks__/decky-ui.ts:
+          Mock exports: PanelSection, PanelSectionRow, ButtonItem, Field,
+          ToggleField, SliderField, DropdownItem, TextField
+          — all as simple div wrappers that render children
+
+      Modify package.json:
+        - Add devDependencies: vitest, @testing-library/react, @testing-library/jest-dom,
+          @testing-library/user-event, jsdom, @types/react, @types/react-dom
+        - Update "test" script: "vitest run"
+        - Add "test:watch": "vitest"
+        - Add "test:coverage": "vitest run --coverage"
+    wave: 1
+    agent: gem-implementer
+    prototype: false
+    covers: ["vitest.config.ts", "src/__mocks__/", "package.json test scripts"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: []
+    conflicts_with: []
+    context_files:
+      - path: package.json
+        description: "Current deps — react, @decky/api, @decky/ui"
+      - path: tsconfig.json
+        description: "TS config — paths, jsx mode"
+      - path: src/hooks/useBackend.ts
+        description: "Uses callable from @decky/api — need to mock"
+      - path: src/components/MainView.tsx
+        description: "Uses @decky/ui components — need to mock"
+    estimated_effort: small
+    estimated_files: 3
+    estimated_lines: 120
+    focus_area: "Frontend test infrastructure"
+    verification:
+      - "pnpm exec vitest run returns 0 (even with 0 tests)"
+      - "Import of @decky/api in test files resolves to mock"
+      - "Import of @decky/ui in test files resolves to mock"
+    acceptance_criteria:
+      - "vitest.config.ts exists with jsdom environment"
+      - "src/__mocks__/decky-api.ts exports callable, definePlugin, staticClasses"
+      - "src/__mocks__/decky-ui.ts exports all used @decky/ui components as mock stubs"
+      - "package.json test script runs vitest"
+    failure_modes:
+      - scenario: "@decky/ui mock stubs don't match component prop signatures"
+        likelihood: medium
+        impact: low
+        mitigation: >
+          Use generic React.FC<{children?: React.ReactNode}> for all stubs.
+          Only mock rendering, not behavior.
+    tech_stack: ["typescript", "vitest", "react-testing-library", "jsdom"]
+    test_coverage: null
+    requires_review: false
+
+  # ================================================================
+  # WAVE 2: Easy Python Tests (pure functions + filesystem)
+  # ================================================================
+  - id: T4
+    title: "Add conftest.py fixtures and tests for hid_descriptor.py"
+    description: |
+      Create the Python test directory structure with shared fixtures, plus
+      comprehensive tests for the pure-function hid_descriptor module.
+
+      Files to create:
+        tests/__init__.py (empty)
+        tests/backend/__init__.py (empty)
+
+        tests/conftest.py:
+          Fixtures:
+            - tmp_config_dir: creates temp dir with defaults.json for Config tests
+            - tmp_profiles_dir: creates temp dir for ProfileManager tests
+            - mock_evdev_module: patches evdev import for InputReader/IMUReader tests
+            - sample_input_state: returns InputState with known values
+
+        tests/backend/test_hid_descriptor.py:
+          Tests for:
+            - pack_report: zero state, full buttons, boundary axes, clamping
+            - pack_mouse_report: zero, movement, button combos, clamping
+            - pack_motion_report: zero, boundaries, clamping
+            - Report sizes: gamepad=15 bytes (1 ID + 3 btn + 8 axes + 2 triggers + 1 dpad)
+            - Report ID prefixes: 0x01 gamepad, 0x02 mouse, 0x03 motion
+            - Descriptor byte arrays: snapshot test (length, first/last bytes)
+            - D-pad constants: DPAD_UP=0, DPAD_NEUTRAL=0x0F, etc.
+            - Button constants: BTN_A=0 through BTN_R5=16
+
+      Mocking: NONE — all pure functions.
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["conftest.py", "test_hid_descriptor.py"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["T1"]
+    conflicts_with: []
+    context_files:
+      - path: backend/hid_descriptor.py
+        description: "Test subject — pack_report, pack_mouse_report, pack_motion_report, constants"
+      - path: pyproject.toml
+        description: "pytest config (created by T1)"
+    estimated_effort: medium
+    estimated_files: 3
+    estimated_lines: 200
+    focus_area: "HID report packing correctness"
+    verification:
+      - "pytest tests/backend/test_hid_descriptor.py passes"
+      - "All pack functions tested at boundary values"
+      - "Report byte sizes verified"
+    acceptance_criteria:
+      - "tests/conftest.py exists with shared fixtures"
+      - "tests/backend/test_hid_descriptor.py has ≥15 test cases"
+      - "Tests cover: zero state, max values, clamping, report IDs, report sizes"
+      - "pytest runs clean with 0 failures"
+    failure_modes: []
+    tech_stack: ["python", "pytest"]
+    test_coverage: "100% of hid_descriptor public API"
+    requires_review: false
+
+  - id: T5
+    title: "Add tests for trackpad_mouse.py"
+    description: |
+      Test the TrackpadMouse state machine — pure class with no I/O deps.
+
+      File: tests/backend/test_trackpad_mouse.py
+      Tests for TrackpadMouse:
+        - update_right: first touch returns (0,0), subsequent touches return deltas
+        - update_right: lift and re-touch resets tracking
+        - update_right: sensitivity scaling (sensitivity=2.0 doubles delta)
+        - update_right: clamping to -127..127
+        - update_left: scroll wheel delta calculation
+        - update_left: scroll inversion (finger up = positive wheel)
+        - update_left: scroll_sensitivity scaling
+        - update_left: lift-and-replace resets tracking
+        - reset: clears all tracking state
+        - Edge: x=0, y=0 position
+        - Edge: maximum trackpad value (32767)
+
+      Mocking: NONE — pure state machine.
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["test_trackpad_mouse.py"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["T1"]
+    conflicts_with: []
+    context_files:
+      - path: backend/trackpad_mouse.py
+        description: "Test subject — TrackpadMouse class (95 lines)"
+    estimated_effort: small
+    estimated_files: 1
+    estimated_lines: 120
+    focus_area: "Trackpad-to-mouse conversion correctness"
+    verification:
+      - "pytest tests/backend/test_trackpad_mouse.py passes"
+      - "Delta calculation verified with known inputs"
+      - "Clamping verified at boundaries"
+    acceptance_criteria:
+      - "tests/backend/test_trackpad_mouse.py has ≥10 test cases"
+      - "Tests cover: first touch, deltas, lift-replace, sensitivity, clamping, reset"
+      - "All tests pass"
+    failure_modes: []
+    tech_stack: ["python", "pytest"]
+    test_coverage: "100% of TrackpadMouse public API"
+    requires_review: false
+
+  - id: T6
+    title: "Add tests for config.py and profile_manager.py"
+    description: |
+      Test Config (JSON config manager) and ProfileManager (profile CRUD) — both
+      need tmp_path for filesystem isolation.
+
+      File: tests/backend/test_config.py
+      Tests for Config:
+        - Load defaults when no user config exists
+        - Load user config that overrides defaults
+        - Merge: user config values override defaults, defaults fill missing keys
+        - get(key) returns value, get(missing_key, default) returns default
+        - set(key, value) updates in-memory and persists to disk
+        - save() writes valid JSON
+        - Property accessors: controller_name, deadzone, polling_rate_hz, etc.
+        - to_dict() returns complete config
+        - Thread safety: concurrent get/set don't corrupt state (basic check)
+        - Edge: corrupt JSON file falls back to defaults
+        - Edge: missing defaults file uses hardcoded fallback
+
+      File: tests/backend/test_profile_manager.py
+      Tests for Profile dataclass:
+        - sends_gamepad/sends_mouse/sends_motion based on active_reports
+        - to_dict/from_dict roundtrip
+        - from_dict with missing keys uses defaults
+
+      Tests for ProfileManager:
+        - Default profiles loaded on init (4 profiles: Desktop, FPS, Racing, Media)
+        - switch_profile(index) changes active_profile
+        - switch_profile(invalid) raises IndexError
+        - switch_by_name("FPS") works, switch_by_name("nonexistent") returns None
+        - add_profile returns new index
+        - remove_profile removes and reindexes
+        - remove_profile refuses to remove last profile
+        - Persistence: profiles survive save/reload cycle
+        - to_dict() returns profiles list and active_index
+
+      Mocking: Uses tmp_path fixture for filesystem isolation.
+    wave: 2
+    agent: gem-implementer
+    prototype: false
+    covers: ["test_config.py", "test_profile_manager.py"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["T1", "T4"]
+    conflicts_with: []
+    context_files:
+      - path: backend/config.py
+        description: "Test subject — Config class (158 lines)"
+      - path: backend/profile_manager.py
+        description: "Test subject — Profile + ProfileManager (198 lines)"
+      - path: defaults/defaults.json
+        description: "Default config values used by Config"
+      - path: tests/conftest.py
+        description: "Shared fixtures: tmp_config_dir, tmp_profiles_dir (created by T4)"
+    estimated_effort: medium
+    estimated_files: 2
+    estimated_lines: 250
+    focus_area: "Config persistence and profile management correctness"
+    verification:
+      - "pytest tests/backend/test_config.py tests/backend/test_profile_manager.py passes"
+      - "Filesystem operations use tmp_path (no real config files touched)"
+    acceptance_criteria:
+      - "test_config.py has ≥10 test cases covering load/save/merge/properties"
+      - "test_profile_manager.py has ≥10 test cases covering CRUD/switch/persistence"
+      - "All tests pass, no temp files leak"
+    failure_modes: []
+    tech_stack: ["python", "pytest"]
+    test_coverage: "100% of Config and ProfileManager public API"
+    requires_review: false
+
+  # ================================================================
+  # WAVE 3: Medium Python Tests + Frontend Tests
+  # ================================================================
+  - id: T7
+    title: "Add tests for input_reader.py"
+    description: |
+      Test InputReader — requires evdev mocking since evdev is not available on dev machines.
+
+      File: tests/backend/test_input_reader.py
+
+      Tests for InputState dataclass (no mocking):
+        - Default values are zero/neutral
+        - copy() creates independent copy
+
+      Tests for _apply_deadzone (no mocking):
+        - Value within deadzone returns 0
+        - Value outside deadzone passes through
+        - Boundary values
+
+      Tests for InputReader (evdev mocked):
+        - find_devices() returns devices matching DECK_CONTROLLER_NAMES
+        - find_devices() returns empty list when no matching device
+        - start() returns True when device found, sets is_running
+        - start() returns False when no device found
+        - stop() cancels task and ungrabs device
+        - Button event processing: sets correct bit in buttons field
+        - Axis event processing: normalizes stick values
+        - Trigger event processing: L2/R2 values
+        - D-pad event processing: hat switch mapping
+        - Trackpad events: touch, position, click
+
+      Mocking strategy:
+        - Patch evdev.list_devices to return test paths
+        - Patch evdev.InputDevice to return mock device with:
+          - .name property matching DECK_CONTROLLER_NAMES
+          - .capabilities() returning test capabilities
+          - async_read_loop() yielding mock InputEvent objects
+          - grab()/ungrab() as no-ops
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    covers: ["test_input_reader.py"]
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["T4", "T5"]
+    conflicts_with: []
+    context_files:
+      - path: backend/input_reader.py
+        description: "Test subject — InputReader, InputState, _apply_deadzone (359 lines)"
+      - path: backend/hid_descriptor.py
+        description: "Imports DPAD_NEUTRAL constant"
+      - path: tests/conftest.py
+        description: "Shared fixtures including mock_evdev_device pattern"
+    estimated_effort: medium
+    estimated_files: 1
+    estimated_lines: 200
+    focus_area: "Input event processing correctness"
+    verification:
+      - "pytest tests/backend/test_input_reader.py passes"
+      - "evdev is never actually imported (patched at module level)"
+      - "InputState and _apply_deadzone tested without mocking"
+    acceptance_criteria:
+      - "≥12 test cases covering dataclass, deadzone, device discovery, event processing"
+      - "evdev fully mocked — tests run without evdev installed"
+      - "All tests pass"
+    failure_modes:
+      - scenario: "evdev import at module level prevents patching"
+        likelihood: medium
+        impact: medium
+        mitigation: >
+          input_reader.py already has try/except ImportError for evdev.
+          Patch sys.modules['evdev'] before importing input_reader in tests.
+    tech_stack: ["python", "pytest", "unittest.mock"]
+    test_coverage: "InputState 100%, InputReader ~80% (skip async_read_loop internals)"
+    requires_review: false
+
+  - id: T8
+    title: "Add tests for imu_reader.py"
+    description: |
+      Test IMUReader — similar evdev mocking pattern as input_reader.
+
+      File: tests/backend/test_imu_reader.py
+
+      Tests for MotionState dataclass (no mocking):
+        - Default values are zero
+        - Field assignments work correctly
+
+      Tests for CalibrationData dataclass (no mocking):
+        - Default offsets are zero
+        - Offset application shifts values
+
+      Tests for IMUReader (evdev mocked):
+        - find_imu_device() finds device with accelerometer capability
+        - find_imu_device() returns None when no IMU
+        - start() returns True when IMU found
+        - start() returns False when no IMU
+        - stop() cancels task
+        - Calibration: collects samples, averages offsets
+        - is_calibrated becomes True after calibration window
+        - Motion events: gyro XYZ and accel XYZ processing
+
+      Mocking: Same pattern as T7 — patch evdev at sys.modules level.
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    covers: ["test_imu_reader.py"]
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["T4", "T7"]
+    conflicts_with: []
+    context_files:
+      - path: backend/imu_reader.py
+        description: "Test subject — IMUReader, MotionState, CalibrationData (230 lines)"
+      - path: tests/backend/test_input_reader.py
+        description: "Reference for evdev mocking pattern (created by T7)"
+    estimated_effort: small
+    estimated_files: 1
+    estimated_lines: 150
+    focus_area: "IMU reading and calibration correctness"
+    verification:
+      - "pytest tests/backend/test_imu_reader.py passes"
+      - "Calibration logic tested with known offsets"
+    acceptance_criteria:
+      - "≥8 test cases covering dataclasses, device discovery, calibration"
+      - "evdev fully mocked"
+      - "All tests pass"
+    failure_modes: []
+    tech_stack: ["python", "pytest", "unittest.mock"]
+    test_coverage: "MotionState/CalibrationData 100%, IMUReader ~75%"
+    requires_review: false
+
+  - id: T9
+    title: "Add frontend tests for useBackend hook and all components"
+    description: |
+      Test the useBackend hook and all 4 React components using vitest +
+      @testing-library/react with the @decky mocks from T3.
+
+      Files to create:
+        src/__tests__/hooks/useBackend.test.ts:
+          - Initial load calls getStatus, getDevices, getConfig
+          - refreshStatus updates status state
+          - startBroadcasting calls RPC and refreshes status
+          - stopBroadcasting calls RPC and refreshes status
+          - setConfig calls RPC and updates config state
+          - Auto-refresh interval starts when state != idle
+          - Auto-refresh interval clears when state == idle
+          - removeDevice calls RPC
+
+        src/__tests__/components/MainView.test.tsx:
+          - Renders "Idle" state with correct color
+          - Renders "Broadcasting" state with correct color
+          - Renders "Connected" state with device info
+          - Toggle button shows "Start Broadcasting" when idle
+          - Toggle button shows "Stop Broadcasting" when active
+          - Button click calls correct action
+
+        src/__tests__/components/DeviceList.test.tsx:
+          - Empty state shows "No devices" message
+          - Renders device list with names and addresses
+          - Remove button calls removeDevice + refreshDevices
+          - Refresh button calls refreshDevices
+
+        src/__tests__/components/ProfilePicker.test.tsx:
+          - Loading state shows "Loading..."
+          - Renders profile list
+          - Active profile shows checkmark
+          - Switch button calls switchProfile
+          - Disabled during switching
+
+        src/__tests__/components/Settings.test.tsx:
+          - Loading state when config is null
+          - Renders all setting controls
+          - Controller name change calls setConfig
+          - Toggle fields call setConfig with correct keys
+          - Slider change calls setConfig
+
+      Mocking:
+        - @decky/api: use src/__mocks__/decky-api.ts (from T3)
+        - @decky/ui: use src/__mocks__/decky-ui.ts (from T3)
+        - useBackend hook: mock return values per test
+    wave: 3
+    agent: gem-implementer
+    prototype: false
+    covers:
+      - "useBackend.test.ts"
+      - "MainView.test.tsx"
+      - "DeviceList.test.tsx"
+      - "ProfilePicker.test.tsx"
+      - "Settings.test.tsx"
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["T3"]
+    conflicts_with: []
+    context_files:
+      - path: src/hooks/useBackend.ts
+        description: "Test subject — useBackend hook (179 lines)"
+      - path: src/components/MainView.tsx
+        description: "Test subject — MainView component (73 lines)"
+      - path: src/components/DeviceList.tsx
+        description: "Test subject — DeviceList component (48 lines)"
+      - path: src/components/ProfilePicker.tsx
+        description: "Test subject — ProfilePicker component (95 lines)"
+      - path: src/components/Settings.tsx
+        description: "Test subject — Settings component (120 lines)"
+      - path: src/__mocks__/decky-api.ts
+        description: "Mock for @decky/api (created by T3)"
+      - path: src/__mocks__/decky-ui.ts
+        description: "Mock for @decky/ui (created by T3)"
+    estimated_effort: medium
+    estimated_files: 5
+    estimated_lines: 300
+    focus_area: "Frontend rendering and interaction correctness"
+    verification:
+      - "pnpm exec vitest run passes with all frontend tests"
+      - "Each component has ≥3 test cases"
+    acceptance_criteria:
+      - "5 test files created (1 hook + 4 components)"
+      - "useBackend hook tested with renderHook"
+      - "All components tested for rendering states and user interactions"
+      - "All tests pass"
+    failure_modes:
+      - scenario: "@decky/ui mock doesn't render children correctly"
+        likelihood: medium
+        impact: medium
+        mitigation: >
+          Use simple forwardRef wrappers: (props) => <div data-testid={name}>{props.children}</div>.
+          Test for text content rather than component structure.
+    tech_stack: ["typescript", "vitest", "react-testing-library", "jsdom"]
+    test_coverage: "All exported components and hook"
+    requires_review: false
+
+  # ================================================================
+  # WAVE 4: Complex Python Tests
+  # ================================================================
+  - id: T10
+    title: "Add tests for bt_hid_service.py"
+    description: |
+      Test BTHIDService — the most complex module. Heavy mocking of socket,
+      subprocess, and filesystem required.
+
+      File: tests/backend/test_bt_hid_service.py
+
+      Tests for ConnectionInfo (no mocking):
+        - Constructor sets address and name
+        - to_dict() returns correct dict
+        - Default name is "Unknown"
+
+      Tests for BTHIDService (heavily mocked):
+        - get_status() returns correct dict structure when not running
+        - get_status() returns correct dict structure when connected
+        - start() calls subprocess to configure adapter
+        - start() opens L2CAP sockets on PSM 17 and 19
+        - start() returns False when adapter config fails
+        - stop() closes sockets and restores bluetoothd
+        - send_report() sends bytes to interrupt channel
+        - send_report() returns False when not connected
+        - get_paired_devices() parses bluetoothctl output
+
+      Mocking:
+        - socket.socket: mock L2CAP socket (bind, listen, accept, send, close)
+        - subprocess.run: mock bluetoothctl, hciconfig, sdptool commands
+        - asyncio.create_subprocess_exec: mock systemctl, bluetoothctl async
+        - builtins.open: mock SDP XML file read (or use tmp_path with fixture)
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    covers: ["test_bt_hid_service.py"]
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["T7", "T8"]
+    conflicts_with: []
+    context_files:
+      - path: backend/bt_hid_service.py
+        description: "Test subject — BTHIDService (495 lines)"
+      - path: assets/gamepad_sdp.xml
+        description: "SDP record loaded by BTHIDService"
+    estimated_effort: large
+    estimated_files: 1
+    estimated_lines: 250
+    focus_area: "Bluetooth service lifecycle and error handling"
+    verification:
+      - "pytest tests/backend/test_bt_hid_service.py passes"
+      - "No real sockets or subprocesses opened"
+      - "All subprocess calls are mocked"
+    acceptance_criteria:
+      - "≥10 test cases covering ConnectionInfo, lifecycle, send/receive, error paths"
+      - "socket, subprocess, asyncio.create_subprocess_exec fully mocked"
+      - "All tests pass without Bluetooth hardware"
+    failure_modes:
+      - scenario: "Complex mock setup causes brittle tests"
+        likelihood: medium
+        impact: medium
+        mitigation: >
+          Focus on testing observable behavior (return values, state changes),
+          not internal implementation. Use pytest fixtures for mock setup.
+    tech_stack: ["python", "pytest", "unittest.mock", "pytest-asyncio"]
+    test_coverage: "ConnectionInfo 100%, BTHIDService ~70% (skip accept loop internals)"
+    requires_review: false
+
+  - id: T11
+    title: "Add tests for main.py Plugin class"
+    description: |
+      Test the Plugin class RPC methods — thin orchestration layer that delegates
+      to backend modules. All backend modules are mocked.
+
+      File: tests/test_main.py
+
+      Tests for Plugin RPC methods:
+        - start_broadcasting: success path (bt_service.start → input_reader.start)
+        - start_broadcasting: bt_service fails → returns error, doesn't start input
+        - start_broadcasting: input_reader fails → stops bt_service, returns error
+        - stop_broadcasting: calls stop on all readers and bt_service
+        - get_status: returns merged bt_status + input_active
+        - get_devices: delegates to bt_service.get_paired_devices
+        - set_config: valid key/value updates config
+        - set_config: unknown key returns error
+        - set_config: deadzone out of range returns error
+        - set_config: invalid polling_rate returns error
+        - set_config: deadzone updates input_reader._deadzone at runtime
+        - get_config: returns config.to_dict()
+        - enable_gyro: starts imu_reader
+        - disable_gyro: stops imu_reader
+        - get_profiles: delegates to profile_manager.to_dict()
+        - switch_profile: updates trackpad_mouse sensitivity, handles IMU start/stop
+        - add_profile: creates Profile from dict
+        - remove_profile: delegates and returns result
+
+      Tests for callbacks:
+        - _on_input_state_change: packs gamepad report and sends
+        - _on_input_state_change: packs mouse report when profile has mouse
+        - _on_motion_state_change: packs motion report and sends
+
+      Mocking:
+        - BTHIDService, InputReader, IMUReader, Config, ProfileManager, TrackpadMouse
+          — all mocked at class level using unittest.mock.patch
+        - decky module — already has dev stub in main.py
+    wave: 4
+    agent: gem-implementer
+    prototype: false
+    covers: ["test_main.py"]
+    priority: medium
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["T6", "T10"]
+    conflicts_with: []
+    context_files:
+      - path: main.py
+        description: "Test subject — Plugin class with 13 RPC methods (358 lines)"
+      - path: backend/config.py
+        description: "Config class interface for mocking"
+      - path: backend/profile_manager.py
+        description: "ProfileManager/Profile interface for mocking"
+    estimated_effort: medium
+    estimated_files: 1
+    estimated_lines: 280
+    focus_area: "RPC method validation and orchestration logic"
+    verification:
+      - "pytest tests/test_main.py passes"
+      - "All 13 RPC methods have at least 1 test"
+      - "set_config validation logic fully tested"
+    acceptance_criteria:
+      - "≥18 test cases covering all RPC methods + callbacks"
+      - "All backend modules mocked (no real BT/evdev/filesystem)"
+      - "Validation in set_config tested: ALLOWED_KEYS, deadzone range, polling rates"
+      - "All tests pass"
+    failure_modes:
+      - scenario: "Plugin.__init__ not called — methods fail on missing attributes"
+        likelihood: low
+        impact: medium
+        mitigation: >
+          Create a fixture that instantiates Plugin and calls _main() with
+          all backend deps mocked, or set attributes directly.
+    tech_stack: ["python", "pytest", "pytest-asyncio", "unittest.mock"]
+    test_coverage: "All 13 RPC methods + 2 callbacks"
+    requires_review: false
+
+  # ================================================================
+  # WAVE 5: Pre-commit Hooks + Makefile
+  # ================================================================
+  - id: T12
+    title: "Set up pre-commit hooks and update Makefile"
+    description: |
+      Wire everything together with pre-commit framework hooks and updated
+      Makefile targets.
+
+      File: .pre-commit-config.yaml
+        repos:
+          - repo: https://github.com/pre-commit/pre-commit-hooks
+            hooks: [trailing-whitespace, end-of-file-fixer, check-yaml, check-json]
+          - repo: https://github.com/psf/black
+            hooks: [black] (args: --check not needed — pre-commit auto-formats)
+          - repo: https://github.com/pycqa/isort
+            hooks: [isort]
+          - repo: https://github.com/pycqa/flake8
+            hooks: [flake8]
+          - repo: local
+            hooks:
+              - id: mypy
+                name: mypy
+                entry: mypy
+                language: system
+                types: [python]
+                args: [--ignore-missing-imports]
+              - id: pytest
+                name: pytest
+                entry: pytest
+                language: system
+                types: [python]
+                pass_filenames: false
+                args: [--tb=short, -q]
+              - id: eslint
+                name: eslint
+                entry: pnpm exec eslint
+                language: system
+                types_or: [ts, tsx]
+              - id: prettier
+                name: prettier
+                entry: pnpm exec prettier --check
+                language: system
+                types_or: [ts, tsx, json]
+              - id: vitest
+                name: vitest
+                entry: pnpm exec vitest run
+                language: system
+                pass_filenames: false
+                stages: [pre-commit]
+
+      Makefile changes:
+        Add targets:
+          test-py: pytest --tb=short -q
+          test-ts: pnpm exec vitest run
+          test: test-py test-ts
+          format: black backend/ main.py && isort backend/ main.py && pnpm exec prettier --write src/
+          hooks-install: pre-commit install
+          hooks-run: pre-commit run --all-files
+
+        Update lint target: remove inline flags (now in pyproject.toml/.flake8)
+          lint:
+            black --check backend/ main.py
+            isort --check-only backend/ main.py
+            flake8 backend/ main.py
+            mypy backend/ main.py
+            pnpm exec eslint src/
+            pnpm exec prettier --check src/
+
+        Update verify target: add test dependency
+          verify: lint test build (structural checks)
+    wave: 5
+    agent: gem-implementer
+    prototype: false
+    covers: [".pre-commit-config.yaml", "Makefile"]
+    priority: high
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["T10", "T11", "T9"]
+    conflicts_with: []
+    context_files:
+      - path: Makefile
+        description: "Current Makefile to modify"
+      - path: pyproject.toml
+        description: "Python tool configs (created by T1)"
+      - path: eslint.config.js
+        description: "ESLint config (created by T2)"
+      - path: .prettierrc
+        description: "Prettier config (created by T2)"
+    estimated_effort: small
+    estimated_files: 2
+    estimated_lines: 100
+    focus_area: "Developer workflow automation"
+    verification:
+      - "pre-commit install succeeds"
+      - "pre-commit run --all-files passes (or reports only expected issues)"
+      - "make test runs pytest + vitest"
+      - "make lint runs all linters (Python + TypeScript)"
+      - "make format auto-formats all files"
+    acceptance_criteria:
+      - ".pre-commit-config.yaml exists with Python + TS hooks"
+      - "Makefile has test, test-py, test-ts, format, hooks-install targets"
+      - "make verify now includes test step"
+      - "pre-commit hooks block commits with lint/test failures"
+    failure_modes:
+      - scenario: "pre-commit hooks too slow (>30s)"
+        likelihood: medium
+        impact: low
+        mitigation: >
+          Use pass_filenames: false for pytest/vitest (run full suite, not per-file).
+          Keep lint hooks fast. Document `git commit --no-verify` for emergencies.
+    tech_stack: ["pre-commit", "make", "git"]
+    test_coverage: null
+    requires_review: false
+
+  # ================================================================
+  # WAVE 6: Documentation
+  # ================================================================
+  - id: T13
+    title: "Document testing setup and developer workflow"
+    description: |
+      Update project documentation with testing instructions, dev workflow,
+      and pre-commit hook usage.
+
+      File: docs/DEVELOPMENT.md (update existing)
+        Add sections:
+          ## Testing
+          ### Python Tests
+          - How to run: `make test-py` or `pytest`
+          - How to run with coverage: `pytest --cov=backend --cov=main --cov-report=term-missing`
+          - Test structure: tests/backend/ mirrors backend/
+
+          ### TypeScript Tests
+          - How to run: `make test-ts` or `pnpm exec vitest run`
+          - How to run with coverage: `pnpm exec vitest run --coverage`
+          - Mocking: @decky/api and @decky/ui mocked in src/__mocks__/
+
+          ### Running All Tests
+          - `make test` runs both Python and TypeScript tests
+
+          ## Pre-commit Hooks
+          - Install: `make hooks-install` (or `pre-commit install`)
+          - What runs: black, isort, flake8, mypy, pytest, eslint, prettier, vitest
+          - Skip hooks: `git commit --no-verify` (use sparingly)
+          - Run manually: `make hooks-run`
+
+          ## Code Formatting
+          - Auto-format: `make format`
+          - Check only: `make lint`
+    wave: 6
+    agent: gem-documentation-writer
+    prototype: false
+    covers: ["docs/DEVELOPMENT.md"]
+    priority: low
+    status: pending
+    flags:
+      flaky: false
+      retries_used: 0
+    dependencies: ["T12"]
+    conflicts_with: []
+    context_files:
+      - path: docs/DEVELOPMENT.md
+        description: "Existing dev docs to update"
+      - path: Makefile
+        description: "Updated Makefile targets (from T12)"
+      - path: .pre-commit-config.yaml
+        description: "Pre-commit config (from T12)"
+    estimated_effort: small
+    estimated_files: 1
+    estimated_lines: 80
+    focus_area: "Developer onboarding documentation"
+    verification:
+      - "docs/DEVELOPMENT.md has Testing, Pre-commit Hooks, and Code Formatting sections"
+      - "All documented commands actually work"
+    acceptance_criteria:
+      - "Testing section documents pytest, vitest, coverage commands"
+      - "Pre-commit section documents install, usage, skip"
+      - "Formatting section documents make format and make lint"
+    failure_modes: []
+    task_type: update
+    audience: developers
+    coverage_matrix:
+      - "Python test runner usage"
+      - "TypeScript test runner usage"
+      - "Pre-commit hook install and usage"
+      - "Code formatting workflow"

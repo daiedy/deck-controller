@@ -7,7 +7,6 @@ import logging
 import os
 import socket
 import subprocess
-import xml.etree.ElementTree as ET
 from typing import Any, Optional
 
 logger = logging.getLogger("deck-controller.bt_hid_service")
@@ -21,7 +20,7 @@ BLUEZ_AGENT_MANAGER_IFACE = "org.bluez.AgentManager1"
 BLUEZ_PROFILE_MANAGER_IFACE = "org.bluez.ProfileManager1"
 
 # L2CAP PSM channels
-PSM_CONTROL = 17   # HID Control channel
+PSM_CONTROL = 17  # HID Control channel
 PSM_INTERRUPT = 19  # HID Interrupt channel
 
 # Bluetooth socket constants
@@ -86,7 +85,9 @@ class BTHIDService:
         try:
             # Save current bluetoothd command line
             proc = await asyncio.create_subprocess_exec(
-                "ps", "-eo", "args",
+                "ps",
+                "-eo",
+                "args",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -98,7 +99,9 @@ class BTHIDService:
 
             # Stop bluetoothd
             proc = await asyncio.create_subprocess_exec(
-                "systemctl", "stop", "bluetooth",
+                "systemctl",
+                "stop",
+                "bluetooth",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -106,7 +109,10 @@ class BTHIDService:
 
             # Restart with -P input flag
             await asyncio.create_subprocess_exec(
-                "/usr/lib/bluetooth/bluetoothd", "-P", "input", "--nodetach",
+                "/usr/lib/bluetooth/bluetoothd",
+                "-P",
+                "input",
+                "--nodetach",
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -114,7 +120,8 @@ class BTHIDService:
             # Wait for bluetoothd to start
             for _ in range(10):
                 proc = await asyncio.create_subprocess_exec(
-                    "bluetoothctl", "show",
+                    "bluetoothctl",
+                    "show",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -137,12 +144,14 @@ class BTHIDService:
             # Kill our custom bluetoothd
             subprocess.run(
                 ["pkill", "-f", "bluetoothd.*-P input"],
-                capture_output=True, timeout=5,
+                capture_output=True,
+                timeout=5,
             )
             # Restart the systemd service
             subprocess.run(
                 ["systemctl", "start", "bluetooth"],
-                capture_output=True, timeout=10,
+                capture_output=True,
+                timeout=10,
             )
             logger.info("bluetoothd restored to original state")
         except (subprocess.SubprocessError, OSError) as e:
@@ -186,7 +195,9 @@ class BTHIDService:
         try:
             result = subprocess.run(
                 ["hciconfig", "hci0", "class", device_class],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             if result.returncode == 0:
                 logger.info("Set device class to %s", device_class)
@@ -212,13 +223,17 @@ class BTHIDService:
             result = subprocess.run(
                 ["sdptool", "add", "--handle=0x10001", "--channel=17"],
                 input=self._load_sdp_record(),
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             if result.returncode != 0:
                 # Fallback: register via XML file directly
                 result = subprocess.run(
                     ["sdptool", "add", "--handle=0x10001", "HID"],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
                 )
             logger.info("SDP record registered")
             return True
@@ -258,7 +273,12 @@ class BTHIDService:
 
     def _close_sockets(self) -> None:
         """Close all open sockets."""
-        for sock_name in ("_control_client", "_interrupt_client", "_control_socket", "_interrupt_socket"):
+        for sock_name in (
+            "_control_client",
+            "_interrupt_client",
+            "_control_socket",
+            "_interrupt_socket",
+        ):
             sock = getattr(self, sock_name, None)
             if sock is not None:
                 try:
@@ -267,7 +287,9 @@ class BTHIDService:
                     pass
                 setattr(self, sock_name, None)
 
-    async def start(self, controller_name: str = "Deck Controller", device_class: str = "0x002508") -> bool:
+    async def start(
+        self, controller_name: str = "Deck Controller", device_class: str = "0x002508"
+    ) -> bool:
         """Start the Bluetooth HID service.
 
         Restarts bluetoothd, configures the adapter, registers SDP,
@@ -301,7 +323,8 @@ class BTHIDService:
         try:
             subprocess.run(
                 ["bluetoothctl", "discoverable-timeout", "0"],
-                capture_output=True, timeout=5,
+                capture_output=True,
+                timeout=5,
             )
         except (subprocess.SubprocessError, OSError):
             pass
@@ -318,11 +341,15 @@ class BTHIDService:
         try:
             subprocess.run(
                 ["bluetoothctl", "agent", "NoInputNoOutput"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             subprocess.run(
                 ["bluetoothctl", "default-agent"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
         except (subprocess.SubprocessError, OSError):
             logger.warning("Could not register pairing agent")
@@ -397,7 +424,9 @@ class BTHIDService:
         try:
             result = subprocess.run(
                 ["bluetoothctl", "info", address],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             for line in result.stdout.splitlines():
                 if "Name:" in line:
@@ -471,15 +500,19 @@ class BTHIDService:
         try:
             result = subprocess.run(
                 ["bluetoothctl", "devices", "Paired"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             for line in result.stdout.splitlines():
                 parts = line.strip().split(" ", 2)
                 if len(parts) >= 3 and parts[0] == "Device":
-                    devices.append({
-                        "address": parts[1],
-                        "name": parts[2],
-                    })
+                    devices.append(
+                        {
+                            "address": parts[1],
+                            "name": parts[2],
+                        }
+                    )
         except (subprocess.SubprocessError, OSError) as e:
             logger.error("Failed to list paired devices: %s", e)
         return devices

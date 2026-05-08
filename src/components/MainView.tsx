@@ -35,14 +35,10 @@ export function MainView() {
           <Field
             label="State"
             description={
-              status.connected_device
-                ? `Connected to ${status.connected_device.name}`
-                : undefined
+              status.connected_device ? `Connected to ${status.connected_device.name}` : undefined
             }
           >
-            <span style={{ color: stateColor, fontWeight: "bold" }}>
-              {stateLabel}
-            </span>
+            <span style={{ color: stateColor, fontWeight: "bold" }}>{stateLabel}</span>
           </Field>
         </PanelSectionRow>
 
@@ -57,11 +53,7 @@ export function MainView() {
 
       <PanelSection title="Controls">
         <PanelSectionRow>
-          <ButtonItem
-            layout="below"
-            disabled={isLoading}
-            onClick={handleToggle}
-          >
+          <ButtonItem layout="below" disabled={isLoading} onClick={handleToggle}>
             {status.state === "idle" ? "Start Broadcasting" : "Stop Broadcasting"}
           </ButtonItem>
         </PanelSectionRow>

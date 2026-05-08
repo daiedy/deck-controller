@@ -1,0 +1,597 @@
+plan_id: testing-precommit-setup
+objective: Deep analysis of codebase for test coverage planning and pre-commit hook setup
+focus_area: testing_infrastructure_and_code_analysis
+created_at: "2026-05-08"
+created_by: gem-researcher
+status: completed
+
+tldr: |
+  - ZERO test infrastructure exists — no test files, no test runners, no test dependencies
+  - ZERO pre-commit hooks — no .pre-commit-config.yaml, no .git/hooks/pre-commit, no husky/lint-staged
+  - Makefile has `lint` target using black/isort/flake8/mypy but NO config files for them exist
+  - package.json `test` script is a no-op placeholder
+  - tsconfig.json has strict:true enabled
+  - 9 Python files (2,180 total lines), 6 TypeScript/TSX files (527 total lines)
+  - backend/ modules have clear separation of concerns; hid_descriptor.py and trackpad_mouse.py are highly testable
+  - Heavy external dependencies on evdev, socket (AF_BLUETOOTH), subprocess (bluetoothctl/hciconfig) require mocking
+
+research_metadata:
+  methodology: "file_search + read_file exhaustive scan of all source files"
+  scope: "full codebase — all Python, TypeScript, config files, build tooling"
+  confidence: high
+  coverage: 100
+  decision_blockers: 0
+  research_blockers: 0
+
+# ============================================================
+# SECTION 1: PRE-COMMIT HOOKS
+# ============================================================
+precommit_hooks:
+  pre_commit_config_yaml: false
+  git_hooks_pre_commit: false
+  husky_configured: false
+  lint_staged_configured: false
+  any_js_precommit_tool: false
+  makefile_hook_targets: false
+  summary: |
+    No pre-commit hooks of any kind exist in this project.
+    The Makefile has a `lint` target and a `verify` target (lint + build + structure checks),
+    but these are not wired to any git hooks.
+
+# ============================================================
+# SECTION 2: TESTING INFRASTRUCTURE
+# ============================================================
+testing_infrastructure:
+  test_files_exist: false
+  test_files_found: []
+  python_test_runner_configured: false  # no pytest/unittest config
+  js_test_runner_configured: false  # no jest/vitest config
+  package_json_test_script: 'echo "No tests configured yet" && exit 0'
+  test_dependencies_in_package_json: false
+  test_dependencies_in_requirements: false  # no requirements.txt exists
+  pyproject_toml_exists: false
+  pytest_ini_exists: false
+  conftest_py_exists: false
+  jest_config_exists: false
+  vitest_config_exists: false
+  summary: |
+    Zero testing infrastructure. No test files, no test runners, no test configs,
+    no test dependencies in any manifest file. The package.json `test` script
+    explicitly echoes "No tests configured yet".
+
+# ============================================================
+# SECTION 3: BUILD & LINT SETUP
+# ============================================================
+build_and_lint:
+  makefile_targets:
+    - target: build
+      commands: "pnpm i && pnpm run build"
+    - target: clean
+      commands: "rm -rf dist/ out/ node_modules/"
+    - target: lint
+      commands: |
+        black --check backend/ main.py
+        isort --check-only --profile black backend/ main.py
+        flake8 backend/ main.py --max-line-length 100
+        mypy backend/ main.py --ignore-missing-imports
+    - target: verify
+      commands: "lint + build + structural checks (plugin.json, main.py, dist/index.js, etc.)"
+    - target: deploy
+      commands: "build + zip into deck-controller.zip"
+    - target: init
+      commands: "pnpm install"
+
+  package_json_scripts:
+    build: "rollup -c"
+    test: 'echo "No tests configured yet" && exit 0'
+
+  package_json_dependencies:
+    runtime:
+      - "@decky/api": "^1.1.2"
+      - "@decky/ui": "^4.7.2"
+      - "react": "^18.3.1"
+      - "react-dom": "^18.3.1"
+      - "react-icons": "^4.12.0"
+    dev:
+      - "@rollup/plugin-commonjs": "^28.0.1"
+      - "@rollup/plugin-json": "^6.1.0"
+      - "@rollup/plugin-node-resolve": "^15.3.0"
+      - "@rollup/plugin-replace": "^6.0.1"
+      - "@rollup/plugin-typescript": "^12.1.1"
+      - "rollup": "^4.24.4"
+      - "rollup-plugin-import-css": "^3.5.6"
+      - "tslib": "^2.8.1"
+      - "typescript": "^5.6.3"
+
+  tsconfig:
+    strict: true
+    target: ES2020
+    module: ESNext
+    jsx: react-jsx
+    moduleResolution: node
+    paths:
+      "@/*": ["src/*"]
+
+  lint_configs_present:
+    eslintrc: false
+    prettierrc: false
+    pyproject_toml: false
+    flake8_config: false  # no .flake8 file
+    isort_cfg: false
+    pylintrc: false
+    setup_cfg: false
+    tox_ini: false
+
+  lint_tools_referenced_in_makefile:
+    - tool: black
+      usage: "black --check backend/ main.py"
+      config_file_exists: false
+    - tool: isort
+      usage: "isort --check-only --profile black backend/ main.py"
+      config_file_exists: false
+    - tool: flake8
+      usage: "flake8 backend/ main.py --max-line-length 100"
+      config_file_exists: false
+    - tool: mypy
+      usage: "mypy backend/ main.py --ignore-missing-imports"
+      config_file_exists: false
+
+# ============================================================
+# SECTION 4: PROJECT STRUCTURE — FILE INVENTORY
+# ============================================================
+project_structure:
+  python_files:
+    - file: main.py
+      lines: 358
+      purpose: "DeckyLoader plugin entry point — Plugin class with RPC methods"
+    - file: backend/__init__.py
+      lines: 0
+      purpose: "Package marker (empty)"
+    - file: backend/bt_hid_service.py
+      lines: 495
+      purpose: "Bluetooth HID service — BlueZ D-Bus, L2CAP sockets, SDP registration"
+    - file: backend/config.py
+      lines: 158
+      purpose: "Thread-safe configuration management with JSON persistence"
+    - file: backend/hid_descriptor.py
+      lines: 287
+      purpose: "HID Report Descriptor definitions and report packing functions"
+    - file: backend/input_reader.py
+      lines: 359
+      purpose: "Evdev input reader for Steam Deck gamepad"
+    - file: backend/imu_reader.py
+      lines: 230
+      purpose: "IMU (gyroscope + accelerometer) reader with calibration"
+    - file: backend/profile_manager.py
+      lines: 198
+      purpose: "Profile management — load/save/switch controller profiles"
+    - file: backend/trackpad_mouse.py
+      lines: 95
+      purpose: "Trackpad-to-mouse delta conversion"
+  python_total_lines: 2180
+
+  typescript_files:
+    - file: src/index.tsx
+      lines: 12
+      purpose: "DeckyLoader plugin registration entry point"
+    - file: src/components/MainView.tsx
+      lines: 73
+      purpose: "Main UI panel — status display, start/stop, profile picker"
+    - file: src/components/DeviceList.tsx
+      lines: 48
+      purpose: "Paired Bluetooth devices list with remove functionality"
+    - file: src/components/ProfilePicker.tsx
+      lines: 95
+      purpose: "Profile selection UI with active profile display"
+    - file: src/components/Settings.tsx
+      lines: 120
+      purpose: "Settings panel — controller name, deadzone, gyro, polling rate"
+    - file: src/hooks/useBackend.ts
+      lines: 179
+      purpose: "React hook for backend RPC communication and state management"
+  typescript_total_lines: 527
+
+# ============================================================
+# SECTION 5: PYTHON MODULE ANALYSIS FOR TEST PLANNING
+# ============================================================
+python_module_analysis:
+  - module: backend/hid_descriptor.py
+    lines: 287
+    complexity: simple
+    public_api:
+      - name: GAMEPAD_REPORT_DESCRIPTOR
+        type: variable
+        description: "Xbox-compatible gamepad HID descriptor bytes"
+      - name: MOUSE_REPORT_DESCRIPTOR
+        type: variable
+        description: "Mouse HID descriptor bytes"
+      - name: MOTION_REPORT_DESCRIPTOR
+        type: variable
+        description: "Motion sensor (vendor-specific) HID descriptor bytes"
+      - name: COMPOSITE_REPORT_DESCRIPTOR
+        type: variable
+        description: "Combined gamepad+mouse+motion descriptor"
+      - name: pack_report
+        type: function
+        description: "Pack gamepad state into HID report (15 bytes)"
+        signature: "(buttons, left_x, left_y, right_x, right_y, l2, r2, dpad) -> bytes"
+      - name: pack_mouse_report
+        type: function
+        description: "Pack mouse state into HID report"
+        signature: "(buttons, dx, dy, wheel) -> bytes"
+      - name: pack_motion_report
+        type: function
+        description: "Pack motion sensor data into HID report"
+        signature: "(gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z) -> bytes"
+      - name: "DPAD_* / BTN_* constants"
+        type: variable
+        description: "D-pad directions and button bit position constants"
+    external_dependencies:
+      - struct  # stdlib only
+    mocking_requirements: []
+    test_notes: |
+      HIGHLY TESTABLE — pure functions with no I/O dependencies.
+      Test packing at boundary values, clamping behavior, report sizes.
+      Verify descriptor bytes haven't been corrupted (snapshot tests).
+
+  - module: backend/trackpad_mouse.py
+    lines: 95
+    complexity: simple
+    public_api:
+      - name: TrackpadMouse
+        type: class
+        description: "Converts absolute trackpad positions to relative mouse deltas"
+        methods:
+          - "update_right(x, y, touching) -> (dx, dy)"
+          - "update_left(y, touching) -> int (wheel)"
+          - "reset() -> None"
+    external_dependencies: []  # dataclasses only (stdlib)
+    mocking_requirements: []
+    test_notes: |
+      HIGHLY TESTABLE — pure state machine with no I/O.
+      Test: first touch (no movement), delta calculation, sensitivity scaling,
+      clamping to -127..127, lift-and-replace behavior, reset.
+
+  - module: backend/config.py
+    lines: 158
+    complexity: simple
+    public_api:
+      - name: Config
+        type: class
+        description: "Thread-safe JSON config manager with defaults"
+        methods:
+          - "__init__(config_path, defaults_path)"
+          - "get(key, default) -> Any"
+          - "set(key, value) -> None"
+          - "save() -> None"
+          - "to_dict() -> dict"
+        properties:
+          - "controller_name, auto_connect, polling_rate_hz, deadzone"
+          - "enable_gyro, enable_trackpads, bt_device_class, max_connections"
+    external_dependencies:
+      - json  # stdlib
+      - threading  # stdlib
+      - os  # stdlib
+    mocking_requirements:
+      - filesystem: "mock open() or use tmp_path fixture for config/defaults files"
+    test_notes: |
+      TESTABLE with tmp_path — create temp config files, verify load/save/merge.
+      Test: defaults loading, user config override, missing file handling,
+      thread safety (concurrent get/set), property accessors.
+
+  - module: backend/profile_manager.py
+    lines: 198
+    complexity: simple
+    public_api:
+      - name: Profile
+        type: dataclass
+        description: "Controller profile with report types and sensitivity settings"
+        methods:
+          - "sends_gamepad() -> bool"
+          - "sends_mouse() -> bool"
+          - "sends_motion() -> bool"
+          - "to_dict() -> dict"
+          - "from_dict(data) -> Profile (classmethod)"
+      - name: DEFAULT_PROFILES
+        type: variable
+        description: "List of 4 default profiles (Desktop, FPS, Racing, Media)"
+      - name: ProfileManager
+        type: class
+        description: "Profile CRUD + switching with JSON persistence"
+        methods:
+          - "__init__(settings_dir)"
+          - "switch_profile(index) -> Profile"
+          - "switch_by_name(name) -> Profile | None"
+          - "add_profile(profile) -> int"
+          - "remove_profile(index) -> bool"
+          - "to_dict() -> dict"
+        properties:
+          - "active_profile, profiles"
+    external_dependencies:
+      - json  # stdlib
+      - os  # stdlib
+    mocking_requirements:
+      - filesystem: "mock or use tmp_path for profiles.json"
+    test_notes: |
+      TESTABLE with tmp_path — Profile dataclass is pure, ProfileManager needs
+      temp directory. Test: default profiles, load/save, switch, add/remove,
+      edge cases (remove last, invalid index), from_dict validation.
+
+  - module: backend/input_reader.py
+    lines: 359
+    complexity: complex
+    public_api:
+      - name: InputState
+        type: dataclass
+        description: "Normalized gamepad state (buttons, sticks, triggers, dpad, trackpads)"
+        methods:
+          - "copy() -> InputState"
+      - name: InputReader
+        type: class
+        description: "Evdev input reader for Steam Deck controller"
+        methods:
+          - "find_devices() -> list[dict] (static)"
+          - "start(callback, grab) -> bool"
+          - "stop() -> None"
+        properties:
+          - "is_running, current_state"
+      - name: _apply_deadzone
+        type: function
+        description: "Apply deadzone threshold to axis value"
+    external_dependencies:
+      - evdev: "InputDevice, categorize, ecodes, list_devices, async_read_loop"
+      - asyncio: "Task, create_task, CancelledError"
+    mocking_requirements:
+      - evdev.InputDevice: "mock device with async_read_loop, grab/ungrab"
+      - evdev.list_devices: "mock to return test device paths"
+      - evdev.ecodes: "use real ecodes constants"
+    test_notes: |
+      InputState and _apply_deadzone are testable without mocking.
+      InputReader requires evdev mocking — mock InputDevice with fake events.
+      Test: device discovery, button/axis/dpad event processing, deadzone,
+      trackpad state, grab/ungrab lifecycle.
+
+  - module: backend/imu_reader.py
+    lines: 230
+    complexity: medium
+    public_api:
+      - name: MotionState
+        type: dataclass
+        description: "IMU state — gyro XYZ + accel XYZ"
+      - name: CalibrationData
+        type: dataclass
+        description: "Gyroscope zero-offset calibration"
+      - name: IMUReader
+        type: class
+        description: "Evdev IMU reader with auto-calibration"
+        methods:
+          - "find_imu_device() -> str | None (static)"
+          - "start(callback) -> bool"
+          - "stop() -> None"
+        properties:
+          - "is_running, is_calibrated"
+    external_dependencies:
+      - evdev: "InputDevice, ecodes, list_devices, async_read_loop"
+      - asyncio: "Task, create_task, CancelledError"
+    mocking_requirements:
+      - evdev.InputDevice: "mock IMU device with fake events"
+      - evdev.list_devices: "mock to return test IMU device paths"
+    test_notes: |
+      MotionState/CalibrationData are pure dataclasses.
+      Calibration logic (_finalize_calibration) is testable if _process_event
+      can be called directly with mock events. Test: calibration averaging,
+      offset application, clamping.
+
+  - module: backend/bt_hid_service.py
+    lines: 495
+    complexity: complex
+    public_api:
+      - name: ConnectionInfo
+        type: class
+        description: "Connected device info (address, name)"
+      - name: BTHIDService
+        type: class
+        description: "Bluetooth HID gamepad service — BlueZ + L2CAP"
+        methods:
+          - "start(controller_name, device_class) -> bool"
+          - "stop() -> None"
+          - "send_report(report) -> bool"
+          - "get_status() -> dict"
+          - "get_paired_devices() -> list[dict]"
+        properties:
+          - "is_connected, connected_device"
+    external_dependencies:
+      - socket: "AF_BLUETOOTH, SOCK_SEQPACKET, BDADDR_ANY (L2CAP)"
+      - subprocess: "bluetoothctl, hciconfig, sdptool, pkill, systemctl"
+      - asyncio: "create_subprocess_exec, wait_for, Task"
+      - xml.etree.ElementTree: "SDP record parsing"
+      - os: "file path operations"
+    mocking_requirements:
+      - socket.socket: "mock L2CAP socket creation, bind, listen, accept, send"
+      - subprocess.run: "mock all bluetoothctl/hciconfig/sdptool calls"
+      - asyncio.create_subprocess_exec: "mock systemctl/bluetoothctl async calls"
+      - filesystem: "mock SDP XML file read"
+    test_notes: |
+      MOST COMPLEX module. Heavy system interaction makes unit testing challenging.
+      Strategy: (1) Test ConnectionInfo and get_status() with minimal mocking,
+      (2) Mock subprocess for adapter property setting, (3) Mock socket for
+      L2CAP lifecycle, (4) Integration tests on real hardware only.
+
+  - module: main.py
+    lines: 358
+    complexity: medium
+    public_api:
+      rpc_methods:
+        - "start_broadcasting() -> dict"
+        - "stop_broadcasting() -> dict"
+        - "get_status() -> dict"
+        - "get_devices() -> list[dict]"
+        - "set_config(key, value) -> dict"
+        - "get_config() -> dict"
+        - "enable_gyro() -> dict"
+        - "disable_gyro() -> dict"
+        - "remove_device(address) -> dict"
+        - "get_profiles() -> dict"
+        - "switch_profile(index) -> dict"
+        - "add_profile(profile_data) -> dict"
+        - "remove_profile(index) -> dict"
+      internal_methods:
+        - "_main() -> None (lifecycle)"
+        - "_unload() -> None (cleanup)"
+        - "_uninstall() -> None"
+        - "_on_input_state_change(state) -> None"
+        - "_on_motion_state_change(state) -> None"
+    backend_imports:
+      - "backend.bt_hid_service.BTHIDService"
+      - "backend.config.Config"
+      - "backend.hid_descriptor.pack_report, pack_mouse_report, pack_motion_report"
+      - "backend.input_reader.InputReader, InputState"
+      - "backend.imu_reader.IMUReader, MotionState"
+      - "backend.profile_manager.ProfileManager, Profile"
+      - "backend.trackpad_mouse.TrackpadMouse"
+    external_dependencies:
+      - decky: "DeckyLoader runtime module (stubbed for dev)"
+      - asyncio: "create_subprocess_exec, wait_for, Task, CancelledError"
+    mocking_requirements:
+      - decky: "already has dev stub in main.py"
+      - BTHIDService: "mock start/stop/send_report/get_status"
+      - InputReader: "mock start/stop"
+      - IMUReader: "mock start/stop"
+      - Config: "mock or use tmp_path"
+      - ProfileManager: "mock or use tmp_path"
+    test_notes: |
+      Plugin class methods are thin orchestration layers. Mock all backend modules
+      and test RPC method logic: validation in set_config (ALLOWED_KEYS, range checks),
+      error handling, lifecycle orchestration.
+
+# ============================================================
+# SECTION 6: TYPESCRIPT/TSX MODULE ANALYSIS
+# ============================================================
+typescript_module_analysis:
+  - module: src/index.tsx
+    lines: 12
+    complexity: simple
+    exports:
+      - "default: definePlugin(() => ...)"
+    external_dependencies:
+      - "@decky/api": "definePlugin, staticClasses"
+      - "react-icons/fa": "FaGamepad"
+    mocking_requirements:
+      - "@decky/api": "mock definePlugin"
+    test_notes: "Trivial — just plugin registration. Low priority for testing."
+
+  - module: src/components/MainView.tsx
+    lines: 73
+    complexity: simple
+    exports:
+      - "MainView: React functional component"
+    external_dependencies:
+      - "@decky/ui": "PanelSection, PanelSectionRow, ButtonItem, Field"
+      - "../hooks/useBackend": "useBackend hook"
+      - "./ProfilePicker": "ProfilePicker component"
+    mocking_requirements:
+      - "useBackend": "mock hook return values"
+      - "@decky/ui": "mock Decky UI components"
+    test_notes: |
+      Test: renders correct state label/color, toggle button text changes
+      between idle/broadcasting, connected device display.
+
+  - module: src/components/DeviceList.tsx
+    lines: 48
+    complexity: simple
+    exports:
+      - "DeviceList: React functional component"
+    external_dependencies:
+      - "@decky/ui": "PanelSection, PanelSectionRow, ButtonItem, Field"
+      - "../hooks/useBackend": "useBackend hook"
+    mocking_requirements:
+      - "useBackend": "mock devices array and actions"
+      - "@decky/ui": "mock Decky UI components"
+    test_notes: "Test: empty state, device list rendering, remove/refresh actions."
+
+  - module: src/components/ProfilePicker.tsx
+    lines: 95
+    complexity: medium
+    exports:
+      - "ProfilePicker: React functional component"
+    external_dependencies:
+      - "@decky/ui": "PanelSection, PanelSectionRow, Field, ButtonItem"
+      - "@decky/api": "callable"
+      - "react": "useState, useEffect"
+    mocking_requirements:
+      - "@decky/api callable": "mock get_profiles and switch_profile RPC"
+      - "@decky/ui": "mock Decky UI components"
+    test_notes: |
+      Has its own state management (doesn't use useBackend).
+      Test: loading state, profile list rendering, switch action,
+      active profile indicator.
+
+  - module: src/components/Settings.tsx
+    lines: 120
+    complexity: medium
+    exports:
+      - "Settings: React functional component"
+    external_dependencies:
+      - "@decky/ui": "PanelSection, PanelSectionRow, Field, ToggleField, SliderField, DropdownItem, TextField"
+      - "../hooks/useBackend": "useBackend hook"
+    mocking_requirements:
+      - "useBackend": "mock config object and setConfig action"
+      - "@decky/ui": "mock all Decky UI form components"
+    test_notes: |
+      Test: loading state when config null, correct rendering of all settings,
+      onChange handlers call setConfig with correct keys.
+
+  - module: src/hooks/useBackend.ts
+    lines: 179
+    complexity: medium
+    exports:
+      - "useBackend: custom React hook"
+    external_dependencies:
+      - "react": "useEffect, useState, useCallback, useRef"
+      - "@decky/api": "callable"
+    mocking_requirements:
+      - "@decky/api callable": "mock all 7 RPC callables"
+    test_notes: |
+      Core state management hook. Test: initial loading, status refresh,
+      auto-refresh interval when active, config get/set, error handling.
+      Use @testing-library/react-hooks or renderHook.
+
+# ============================================================
+# SECTION 7: GAPS & OPEN QUESTIONS
+# ============================================================
+open_questions:
+  - question: "Should Python lint tool configs (pyproject.toml) be created to centralize black/isort/flake8/mypy settings?"
+    context: "Makefile references these tools with inline flags but no config files exist"
+    type: nice_to_know
+    affects: ["Makefile", "lint workflow"]
+
+  - question: "Should frontend testing use vitest (Vite-compatible) or jest given the Rollup build?"
+    context: "Project uses Rollup, not Vite — jest may be simpler; vitest works standalone too"
+    type: nice_to_know
+    affects: ["package.json", "test setup"]
+
+  - question: "Are Python lint tools (black, isort, flake8, mypy) installed in the dev environment?"
+    context: "Makefile `lint` target references them but no requirements-dev.txt exists"
+    type: nice_to_know
+    affects: ["CI/CD", "pre-commit hooks"]
+
+gaps:
+  - area: testing
+    description: "No test infrastructure whatsoever — no files, runners, configs, or dependencies"
+    impact: research_blocker
+    affects: ["all modules", "CI/CD", "code quality"]
+
+  - area: pre-commit hooks
+    description: "No pre-commit hooks configured — lint/verify only run manually"
+    impact: research_blocker
+    affects: ["code quality", "developer workflow"]
+
+  - area: python dependency management
+    description: "No requirements.txt, pyproject.toml, or setup.py — Python deps undeclared"
+    impact: nice_to_know
+    affects: ["reproducibility", "CI/CD", "pre-commit setup"]
+
+  - area: frontend lint
+    description: "No ESLint or Prettier configured for TypeScript/TSX files"
+    impact: nice_to_know
+    affects: ["code style", "pre-commit hooks"]

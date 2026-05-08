@@ -16,7 +16,7 @@ const POLLING_RATE_OPTIONS = [
 ];
 
 export function Settings() {
-  const { config, actions, isLoading } = useBackend();
+  const { config, actions } = useBackend();
 
   if (!config) {
     return (

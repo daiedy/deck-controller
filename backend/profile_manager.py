@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 logger = logging.getLogger("deck-controller.profile_manager")
@@ -144,9 +144,7 @@ class ProfileManager:
             IndexError: If index is out of range.
         """
         if not 0 <= index < len(self._profiles):
-            raise IndexError(
-                f"Profile index {index} out of range (0-{len(self._profiles) - 1})"
-            )
+            raise IndexError(f"Profile index {index} out of range (0-{len(self._profiles) - 1})")
         self._active_index = index
         self._save()
         logger.info("Switched to profile: %s", self.active_profile.name)

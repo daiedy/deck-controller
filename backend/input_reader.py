@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 try:
     import evdev  # type: ignore[import-untyped]
-    from evdev import InputDevice, categorize, ecodes  # type: ignore[import-untyped]
+    from evdev import InputDevice, ecodes  # type: ignore[import-untyped]
 except ImportError:
     evdev = None  # type: ignore[assignment]
 
@@ -83,33 +83,33 @@ if evdev is not None:
         ecodes.BTN_B: 1,
         ecodes.BTN_X: 2,
         ecodes.BTN_Y: 3,
-        ecodes.BTN_TL: 4,   # L1
-        ecodes.BTN_TR: 5,   # R1
+        ecodes.BTN_TL: 4,  # L1
+        ecodes.BTN_TR: 5,  # R1
         ecodes.BTN_TL2: 6,  # L2 digital
         ecodes.BTN_TR2: 7,  # R2 digital
         ecodes.BTN_SELECT: 8,
         ecodes.BTN_START: 9,
         ecodes.BTN_THUMBL: 10,  # L3
         ecodes.BTN_THUMBR: 11,  # R3
-        ecodes.BTN_MODE: 12,    # Home
+        ecodes.BTN_MODE: 12,  # Home
         # Back buttons (Steam Deck paddle buttons)
-        getattr(ecodes, 'BTN_TRIGGER_HAPPY1', 0x2C0): 13,  # L4
-        getattr(ecodes, 'BTN_TRIGGER_HAPPY2', 0x2C1): 14,  # L5
-        getattr(ecodes, 'BTN_TRIGGER_HAPPY3', 0x2C2): 15,  # R4
-        getattr(ecodes, 'BTN_TRIGGER_HAPPY4', 0x2C3): 16,  # R5
+        getattr(ecodes, "BTN_TRIGGER_HAPPY1", 0x2C0): 13,  # L4
+        getattr(ecodes, "BTN_TRIGGER_HAPPY2", 0x2C1): 14,  # L5
+        getattr(ecodes, "BTN_TRIGGER_HAPPY3", 0x2C2): 15,  # R4
+        getattr(ecodes, "BTN_TRIGGER_HAPPY4", 0x2C3): 16,  # R5
     }
 
 # D-pad value mapping from (ABS_HAT0X, ABS_HAT0Y) to hat switch
 _DPAD_MAP: dict[tuple[int, int], int] = {
     (0, 0): DPAD_NEUTRAL,
-    (0, -1): 0,    # Up
-    (1, -1): 1,    # Up-Right
-    (1, 0): 2,     # Right
-    (1, 1): 3,     # Down-Right
-    (0, 1): 4,     # Down
-    (-1, 1): 5,    # Down-Left
-    (-1, 0): 6,    # Left
-    (-1, -1): 7,   # Up-Left
+    (0, -1): 0,  # Up
+    (1, -1): 1,  # Up-Right
+    (1, 0): 2,  # Right
+    (1, 1): 3,  # Down-Right
+    (0, 1): 4,  # Down
+    (-1, 1): 5,  # Down-Left
+    (-1, 0): 6,  # Left
+    (-1, -1): 7,  # Up-Left
 }
 
 
@@ -165,11 +165,13 @@ class InputReader:
                 dev = InputDevice(path)
                 for pattern in DECK_CONTROLLER_NAMES:
                     if pattern.lower() in dev.name.lower():
-                        devices.append({
-                            "path": dev.path,
-                            "name": dev.name,
-                            "phys": dev.phys or "",
-                        })
+                        devices.append(
+                            {
+                                "path": dev.path,
+                                "name": dev.name,
+                                "phys": dev.phys or "",
+                            }
+                        )
                         break
                 dev.close()
             except (OSError, PermissionError):
@@ -289,7 +291,7 @@ class InputReader:
             if code in _BUTTON_MAP:
                 bit = _BUTTON_MAP[code]
                 if value:
-                    self._state.buttons |= (1 << bit)
+                    self._state.buttons |= 1 << bit
                 else:
                     self._state.buttons &= ~(1 << bit)
                 changed = True
@@ -318,15 +320,27 @@ class InputReader:
                 changed = True
             elif code == ecodes.ABS_HAT0X:
                 self._hat_x = value
-                self._state.dpad = _DPAD_MAP.get(
-                    (self._hat_x, self._hat_y), DPAD_NEUTRAL
-                )
+                self._state.dpad = _DPAD_MAP.get((self._hat_x, self._hat_y), DPAD_NEUTRAL)
                 changed = True
             elif code == ecodes.ABS_HAT0Y:
                 self._hat_y = value
-                self._state.dpad = _DPAD_MAP.get(
-                    (self._hat_x, self._hat_y), DPAD_NEUTRAL
-                )
+                self._state.dpad = _DPAD_MAP.get((self._hat_x, self._hat_y), DPAD_NEUTRAL)
+                changed = True
+            elif code == ecodes.ABS_HAT2X:
+                self._state.trackpad_left_x = value
+                self._state.trackpad_left_touch = value != 0
+                changed = True
+            elif code == ecodes.ABS_HAT2Y:
+                self._state.trackpad_left_y = value
+                self._state.trackpad_left_touch = value != 0
+                changed = True
+            elif code == ecodes.ABS_HAT3X:
+                self._state.trackpad_right_x = value
+                self._state.trackpad_right_touch = value != 0
+                changed = True
+            elif code == ecodes.ABS_HAT3Y:
+                self._state.trackpad_right_y = value
+                self._state.trackpad_right_touch = value != 0
                 changed = True
             elif code == ecodes.ABS_HAT2X:
                 self._state.trackpad_left_x = value

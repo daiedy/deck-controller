@@ -5,9 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from pathlib import Path
 from typing import Any
-
 
 DEFAULT_CONFIG_PATH: str = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

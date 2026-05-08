@@ -1,0 +1,65 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+
+  - repo: https://github.com/psf/black
+    rev: "24.10.0"
+    hooks:
+      - id: black
+        args: [--line-length=100]
+        files: ^(backend/|main\.py)
+
+  - repo: https://github.com/pycqa/isort
+    rev: "5.13.2"
+    hooks:
+      - id: isort
+        args: [--profile=black, --line-length=100]
+        files: ^(backend/|main\.py)
+
+  - repo: https://github.com/pycqa/flake8
+    rev: "7.1.1"
+    hooks:
+      - id: flake8
+        files: ^(backend/|main\.py)
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: .venv/bin/python -m mypy --ignore-missing-imports
+        language: system
+        types: [python]
+        files: ^(backend/|main\.py)
+
+      - id: pytest
+        name: pytest
+        entry: .venv/bin/python -m pytest --tb=short -q
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: eslint
+        name: eslint
+        entry: pnpm exec eslint
+        language: system
+        types_or: [ts, tsx]
+        files: ^src/
+
+      - id: prettier
+        name: prettier
+        entry: pnpm exec prettier --check
+        language: system
+        types_or: [ts, tsx]
+        files: ^src/
+
+      - id: vitest
+        name: vitest
+        entry: pnpm exec vitest run
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]

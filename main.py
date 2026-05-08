@@ -27,10 +27,10 @@ except ImportError:
 
 from backend.bt_hid_service import BTHIDService
 from backend.config import Config
-from backend.hid_descriptor import pack_report, pack_mouse_report, pack_motion_report
-from backend.input_reader import InputReader, InputState
+from backend.hid_descriptor import pack_motion_report, pack_mouse_report, pack_report
 from backend.imu_reader import IMUReader, MotionState
-from backend.profile_manager import ProfileManager, Profile
+from backend.input_reader import InputReader, InputState
+from backend.profile_manager import Profile, ProfileManager
 from backend.trackpad_mouse import TrackpadMouse
 
 logger = decky.logger if hasattr(decky, "logger") else logging.getLogger("deck-controller")
@@ -235,11 +235,18 @@ class Plugin:
             Dict with 'success' and the updated config.
         """
         ALLOWED_KEYS = {
-            "controller_name", "auto_connect", "polling_rate_hz",
-            "deadzone", "enable_gyro", "enable_trackpads",
-            "bt_device_class", "max_connections",
-            "mouse_sensitivity", "scroll_sensitivity",
-            "gyro_sensitivity", "imu_poll_rate_hz",
+            "controller_name",
+            "auto_connect",
+            "polling_rate_hz",
+            "deadzone",
+            "enable_gyro",
+            "enable_trackpads",
+            "bt_device_class",
+            "max_connections",
+            "mouse_sensitivity",
+            "scroll_sensitivity",
+            "gyro_sensitivity",
+            "imu_poll_rate_hz",
         }
         VALID_POLLING_RATES = {125, 250, 500}
 
@@ -255,7 +262,10 @@ class Plugin:
             elif key == "polling_rate_hz":
                 val = int(value)
                 if val not in VALID_POLLING_RATES:
-                    return {"success": False, "error": f"polling_rate_hz must be one of {VALID_POLLING_RATES}"}
+                    return {
+                        "success": False,
+                        "error": f"polling_rate_hz must be one of {VALID_POLLING_RATES}",
+                    }
                 value = val
 
             self.config.set(key, value)
@@ -304,7 +314,9 @@ class Plugin:
         """
         try:
             proc = await asyncio.create_subprocess_exec(
-                "bluetoothctl", "remove", address,
+                "bluetoothctl",
+                "remove",
+                address,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

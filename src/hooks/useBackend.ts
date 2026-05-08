@@ -29,11 +29,17 @@ interface ConfigData {
   max_connections: number;
 }
 
-const startBroadcasting = callable<[], { success: boolean; state?: string; error?: string }>("start_broadcasting");
-const stopBroadcasting = callable<[], { success: boolean; state?: string; error?: string }>("stop_broadcasting");
+const startBroadcasting = callable<[], { success: boolean; state?: string; error?: string }>(
+  "start_broadcasting",
+);
+const stopBroadcasting = callable<[], { success: boolean; state?: string; error?: string }>(
+  "stop_broadcasting",
+);
 const getStatus = callable<[], Status & { success: boolean }>("get_status");
 const getDevices = callable<[], Device[]>("get_devices");
-const setConfigValue = callable<[string, unknown], { success: boolean; config?: ConfigData }>("set_config");
+const setConfigValue = callable<[string, unknown], { success: boolean; config?: ConfigData }>(
+  "set_config",
+);
 const getConfigValues = callable<[], { success: boolean; config?: ConfigData }>("get_config");
 const removeDevice = callable<[string], { success: boolean; error?: string }>("remove_device");
 
@@ -111,21 +117,18 @@ export function useBackend() {
     }
   }, [refreshStatus]);
 
-  const handleSetConfig = useCallback(
-    async (key: string, value: unknown) => {
-      try {
-        const result = await setConfigValue(key, value);
-        if (result.success && result.config) {
-          setConfig(result.config);
-        }
-        return result;
-      } catch (e) {
-        console.error("Failed to set config:", e);
-        return { success: false, error: String(e) };
+  const handleSetConfig = useCallback(async (key: string, value: unknown) => {
+    try {
+      const result = await setConfigValue(key, value);
+      if (result.success && result.config) {
+        setConfig(result.config);
       }
-    },
-    [],
-  );
+      return result;
+    } catch (e) {
+      console.error("Failed to set config:", e);
+      return { success: false, error: String(e) };
+    }
+  }, []);
 
   // Initial load
   useEffect(() => {

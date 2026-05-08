@@ -16,13 +16,8 @@ interface ProfilesState {
   active_index: number;
 }
 
-const getProfiles = callable<[], { success: boolean } & ProfilesState>(
-  "get_profiles"
-);
-const switchProfile = callable<
-  [number],
-  { success: boolean; profile: Profile }
->("switch_profile");
+const getProfiles = callable<[], { success: boolean } & ProfilesState>("get_profiles");
+const switchProfile = callable<[number], { success: boolean; profile: Profile }>("switch_profile");
 
 export function ProfilePicker() {
   const [state, setState] = useState<ProfilesState | null>(null);
@@ -70,9 +65,7 @@ export function ProfilePicker() {
       <PanelSectionRow>
         <Field
           label="Active"
-          description={activeProfile.active_reports
-            .map((r) => reportIcons[r] || r)
-            .join(" ")}
+          description={activeProfile.active_reports.map((r) => reportIcons[r] || r).join(" ")}
         >
           {activeProfile.name}
         </Field>
