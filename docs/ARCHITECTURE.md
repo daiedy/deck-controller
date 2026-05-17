@@ -75,7 +75,7 @@ graph TB
 | `main.py` | `Plugin` class — DeckyLoader lifecycle (`_main`, `_unload`, `_uninstall`). Exposes RPC methods: `start_broadcasting`, `stop_broadcasting`, `get_status`, `get_devices`, `set_config`, `get_config`. Wires InputReader → pack_report → BTHIDService. |
 | `backend/config.py` | `Config` class — thread-safe JSON config manager. Loads `defaults/defaults.json`, merges with user settings at `~/homebrew/settings/deck-controller/config.json`. All access protected by `threading.Lock`. |
 | `backend/input_reader.py` | `InputReader` class — finds the Steam Deck controller via evdev device name matching (`"Microsoft X-Box 360 pad"`, `"Steam Deck"`, `"Valve Software Steam Controller"`). Grabs the device exclusively, reads events asynchronously, normalizes axes with configurable deadzone, maps buttons to a 16-bit bitmask, converts hat switch values from `ABS_HAT0X`/`ABS_HAT0Y` pairs. |
-| `backend/hid_descriptor.py` | HID Report Descriptor (`_REPORT_DESC`) and `pack_report()` function. Defines an Xbox-compatible gamepad with 16 buttons, 4 × 16-bit axes, 2 × 8-bit triggers, and a 4-bit hat switch. Report format: `<BHhhhhBBB` (14 bytes). |
+| `backend/hid_descriptor.py` | Composite HID Report Descriptor (`COMPOSITE_REPORT_DESCRIPTOR`) and packing helpers. Contains three report IDs: 1 = gamepad (up to 20 buttons, 4 × int16 axes, 2 × uint8 triggers, hat), 2 = mouse (relative X/Y + wheel), 3 = motion (6 × int16 for gyro + accel). The gamepad report packaged by `pack_report()` is 15 bytes: Report ID (1) + 3 bytes buttons + 4×int16 axes + 2×uint8 triggers + 1 byte d-pad. |
 | `backend/bt_hid_service.py` | `BTHIDService` class — manages the full Bluetooth lifecycle: restarts `bluetoothd` with `-P input`, sets device class to `0x002508` (gamepad), configures adapter properties via `bluetoothctl`, registers SDP service record, opens L2CAP sockets on PSM 17/19, accepts connections, sends HID reports, and restores `bluetoothd` on shutdown. |
 
 ## Data Flow
@@ -100,19 +100,19 @@ sequenceDiagram
     BT->>Target: 0xA1 + report via L2CAP PSM 19
 ```
 
-### Report Structure (14 bytes)
+### Report Structure (15 bytes)
 
 | Offset | Size | Field | Range |
 |--------|------|-------|-------|
 | 0 | 1 byte | Report ID | `0x01` |
-| 1 | 2 bytes | Buttons | 16-bit bitmask (LE) |
-| 3 | 2 bytes | Left Stick X | −32768 to 32767 (int16 LE) |
-| 5 | 2 bytes | Left Stick Y | −32768 to 32767 (int16 LE) |
-| 7 | 2 bytes | Right Stick X | −32768 to 32767 (int16 LE) |
-| 9 | 2 bytes | Right Stick Y | −32768 to 32767 (int16 LE) |
-| 11 | 1 byte | L2 Trigger | 0–255 (uint8) |
-| 12 | 1 byte | R2 Trigger | 0–255 (uint8) |
-| 13 | 1 byte | D-pad (lower nibble) | 0–7 direction, `0x0F` neutral |
+| 1–3 | 3 bytes | Buttons | 20-bit bitmask (little-endian across 3 bytes) |
+| 4–5 | 2 bytes | Left Stick X | −32768 to 32767 (int16 LE) |
+| 6–7 | 2 bytes | Left Stick Y | −32768 to 32767 (int16 LE) |
+| 8–9 | 2 bytes | Right Stick X | −32768 to 32767 (int16 LE) |
+| 10–11 | 2 bytes | Right Stick Y | −32768 to 32767 (int16 LE) |
+| 12 | 1 byte | L2 Trigger | 0–255 (uint8) |
+| 13 | 1 byte | R2 Trigger | 0–255 (uint8) |
+| 14 | 1 byte | D-pad (lower nibble) | 0–7 direction, `0x0F` neutral |
 
 ## Technology Stack
 

@@ -55,7 +55,7 @@ flowchart LR
         RPC["@decky/api\n callable RPC"]
         Plugin["main.py\n Plugin class"]
         IR["InputReader\n evdev"]
-        HD["HID Report\n 14 bytes"]
+        HD["Composite HID\n 15 bytes (IDs: 1=gamepad,2=mouse,3=motion)"]
         BT["BTHIDService\n BlueZ + L2CAP"]
         Controller["Built-in\n Controller"]
     end
@@ -73,7 +73,7 @@ flowchart LR
 **The pipeline:**
 
 1. **Input capture** — reads raw events from the controller via Linux `evdev`, grabs the device exclusively
-2. **HID translation** — packs buttons, sticks, triggers into a 14-byte Xbox-compatible HID report
+2. **HID translation** — packs buttons, sticks, triggers into a 15-byte Xbox-compatible HID gamepad report (plus optional mouse and motion reports for trackpads/gyro)
 3. **Bluetooth send** — transmits reports over L2CAP (interrupt channel, PSM 19) to the paired device
 4. **Seamless pairing** — NoInputNoOutput agent handles connection without PINs
 
@@ -124,8 +124,8 @@ All settings are in the plugin's Settings panel (Decky menu → Deck Controller 
 | Auto Connect | Off | Reconnect to last device automatically |
 | Polling Rate | 250 Hz | Input frequency (125 / 250 / 500) |
 | Deadzone | 5% | Analog stick dead zone |
-| Gyro | Off | Forward gyroscope (experimental) |
-| Trackpads | Off | Forward trackpad (experimental) |
+| Gyro | Off | Forward gyroscope (experimental); motion report (Report ID 3) available but disabled by default |
+| Trackpads | Off | Forward trackpad (experimental); mouse report (Report ID 2) available but disabled by default |
 | Max Connections | 1 | Simultaneous BT connections |
 
 Config: `~/homebrew/settings/deck-controller/config.json`

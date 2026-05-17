@@ -72,7 +72,7 @@ Both sockets are set to non-blocking mode and accepted via `asyncio.loop.sock_ac
 
 ## HID Report Descriptor
 
-The HID Report Descriptor defines the structure of input reports sent to the host. It is a binary blob parsed by the host's HID driver. Deck Controller uses an Xbox-compatible gamepad layout defined in `backend/hid_descriptor.py` (`_REPORT_DESC`).
+The HID Report Descriptor defines the structure of input reports sent to the host. It is a binary blob parsed by the host's HID driver. Deck Controller exposes a composite HID report descriptor in `backend/hid_descriptor.py` (`COMPOSITE_REPORT_DESCRIPTOR`) containing three report IDs: 1 = gamepad, 2 = mouse, 3 = motion.
 
 ### Descriptor Breakdown
 
@@ -206,7 +206,7 @@ sequenceDiagram
     TD->>SD: Connect L2CAP PSM 19 (interrupt)
 
     loop Every input event
-        SD->>TD: 0xA1 + 14-byte HID report (PSM 19)
+        SD->>TD: 0xA1 + 15-byte gamepad HID report (PSM 19)
     end
 
     TD->>SD: Disconnect
