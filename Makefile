@@ -1,4 +1,4 @@
-.PHONY: build clean deploy init lint verify test test-py test-ts format hooks-install hooks-run
+.PHONY: build clean deploy init lint verify test test-py test-ts format hooks-install hooks-run watch watch-backend watch-frontend deck-logs deck-errors
 
 PYTHON := .venv/bin/python
 PIP := .venv/bin/pip
@@ -49,9 +49,42 @@ verify: lint test build
 
 deploy: build
 	mkdir -p out
-	cp -r dist defaults assets plugin.json main.py backend LICENSE README.md out/
+	cp -r dist defaults assets plugin.json package.json main.py backend LICENSE README.md out/
 	cd out && zip -r ../deck-controller.zip .
 	rm -rf out
 
 init:
 	pnpm install
+
+watch:
+	@chmod +x scripts/live-reload.sh
+	@scripts/live-reload.sh
+
+watch-backend:
+	@chmod +x scripts/live-reload.sh
+	@scripts/live-reload.sh --backend-only
+
+watch-frontend:
+	@chmod +x scripts/live-reload.sh
+	@scripts/live-reload.sh --frontend-only
+
+deck-logs:
+	@set -a && [ -f .env.deck ] && . ./.env.deck; set +a; \
+	HOST=$${DECK_USER:-deck}@$${DECK_HOST:-192.168.0.199}; \
+	echo "=== DeckyLoader log (last 50 lines) ==="; \
+	ssh $$HOST "tail -50 ~/homebrew/logs/decky.log 2>/dev/null || echo '(not found)'"; \
+	echo ""; \
+	echo "=== Frontend errors ==="; \
+	ssh $$HOST "cat ~/homebrew/settings/deck-controller/frontend-errors.log 2>/dev/null || echo '(no frontend errors)'"; \
+	echo ""; \
+	echo "=== Plugin logs (last 30 lines each) ==="; \
+	ssh $$HOST "for f in ~/homebrew/logs/deck-controller/*.log; do [ -f \"\$$f\" ] && echo \"--- \$$f ---\" && tail -30 \"\$$f\"; done 2>/dev/null || echo '(no plugin logs)'"
+
+deck-errors:
+	@set -a && [ -f .env.deck ] && . ./.env.deck; set +a; \
+	HOST=$${DECK_USER:-deck}@$${DECK_HOST:-192.168.0.199}; \
+	echo "=== Frontend errors ==="; \
+	ssh $$HOST "cat ~/homebrew/settings/deck-controller/frontend-errors.log 2>/dev/null || echo '(no frontend errors)'"; \
+	echo ""; \
+	echo "=== Errors in decky.log (last 20 matches) ==="; \
+	ssh $$HOST "grep -iE '(error|exception|traceback)' ~/homebrew/logs/decky.log 2>/dev/null | grep -i 'deck.controller\|deck-controller' | tail -20 || echo '(no matches)'"

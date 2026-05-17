@@ -15,7 +15,7 @@ const STATE_COLORS: Record<string, string> = {
 };
 
 export function MainView() {
-  const { status, isLoading, actions } = useBackend();
+  const { status, isLoading, actionInProgress, lastError, clearError, actions } = useBackend();
 
   const stateLabel = STATE_LABELS[status.state] || status.state;
   const stateColor = STATE_COLORS[status.state] || "#888";
@@ -27,6 +27,12 @@ export function MainView() {
       await actions.stopBroadcasting();
     }
   };
+
+  const buttonLabel = actionInProgress
+    ? actionInProgress
+    : status.state === "idle"
+      ? "Start Broadcasting"
+      : "Stop Broadcasting";
 
   return (
     <>
@@ -49,12 +55,24 @@ export function MainView() {
             </Field>
           </PanelSectionRow>
         )}
+
+        {lastError && (
+          <PanelSectionRow>
+            <Field label="Error">
+              <span style={{ color: "#ef4444", fontSize: "0.85em" }}>{lastError}</span>
+            </Field>
+          </PanelSectionRow>
+        )}
       </PanelSection>
 
       <PanelSection title="Controls">
         <PanelSectionRow>
-          <ButtonItem layout="below" disabled={isLoading} onClick={handleToggle}>
-            {status.state === "idle" ? "Start Broadcasting" : "Stop Broadcasting"}
+          <ButtonItem
+            layout="below"
+            disabled={isLoading || !!actionInProgress}
+            onClick={handleToggle}
+          >
+            {buttonLabel}
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>

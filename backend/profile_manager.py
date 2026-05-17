@@ -49,6 +49,18 @@ class Profile:
 # Default profiles
 DEFAULT_PROFILES: list[Profile] = [
     Profile(
+        name="Gamepad + Mouse",
+        active_reports=["gamepad", "mouse"],
+        trackpad_mode="mouse",
+        mouse_sensitivity=1.0,
+        scroll_sensitivity=1.0,
+    ),
+    Profile(
+        name="Gamepad",
+        active_reports=["gamepad"],
+        trackpad_mode="disabled",
+    ),
+    Profile(
         name="Desktop",
         active_reports=["mouse"],
         trackpad_mode="mouse",

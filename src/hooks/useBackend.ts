@@ -53,6 +53,8 @@ export function useBackend() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [actionInProgress, setActionInProgress] = useState<string | null>(null);
+  const [lastError, setLastError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refreshStatus = useCallback(async () => {
@@ -93,27 +95,45 @@ export function useBackend() {
 
   const handleStartBroadcasting = useCallback(async () => {
     setIsLoading(true);
+    setActionInProgress("Starting...");
+    setLastError(null);
     try {
       const result = await startBroadcasting();
       if (result.success) {
         await refreshStatus();
+      } else {
+        setLastError(result.error || "Failed to start broadcasting");
       }
       return result;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setLastError(msg);
+      return { success: false, error: msg };
     } finally {
       setIsLoading(false);
+      setActionInProgress(null);
     }
   }, [refreshStatus]);
 
   const handleStopBroadcasting = useCallback(async () => {
     setIsLoading(true);
+    setActionInProgress("Stopping...");
+    setLastError(null);
     try {
       const result = await stopBroadcasting();
       if (result.success) {
         await refreshStatus();
+      } else {
+        setLastError(result.error || "Failed to stop broadcasting");
       }
       return result;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setLastError(msg);
+      return { success: false, error: msg };
     } finally {
       setIsLoading(false);
+      setActionInProgress(null);
     }
   }, [refreshStatus]);
 
@@ -162,6 +182,9 @@ export function useBackend() {
     devices,
     config,
     isLoading,
+    actionInProgress,
+    lastError,
+    clearError: () => setLastError(null),
     actions: {
       startBroadcasting: handleStartBroadcasting,
       stopBroadcasting: handleStopBroadcasting,

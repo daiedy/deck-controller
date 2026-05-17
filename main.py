@@ -5,10 +5,17 @@ Turns the Steam Deck into a Bluetooth HID gamepad controller.
 
 from __future__ import annotations
 
-import asyncio
-import logging
-import os
-from typing import Any
+# Add plugin directory to sys.path so subpackage imports work in DeckyLoader sandbox
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.resolve()))
+
+import asyncio  # noqa: E402
+import logging  # noqa: E402
+import os  # noqa: E402
+import time  # noqa: E402
+from typing import Any  # noqa: E402
 
 # DeckyLoader provides this module at runtime
 try:
@@ -25,13 +32,18 @@ except ImportError:
 
     decky = _DeckyStub()  # type: ignore[assignment]
 
-from backend.bt_hid_service import BTHIDService
-from backend.config import Config
-from backend.hid_descriptor import pack_motion_report, pack_mouse_report, pack_report
-from backend.imu_reader import IMUReader, MotionState
-from backend.input_reader import InputReader, InputState
-from backend.profile_manager import Profile, ProfileManager
-from backend.trackpad_mouse import TrackpadMouse
+from backend.bt_hid_service import BTHIDService  # noqa: E402
+from backend.config import Config  # noqa: E402
+from backend.hid_descriptor import (  # noqa: E402
+    DPAD_NEUTRAL,
+    pack_motion_report,
+    pack_mouse_report,
+    pack_report,
+)
+from backend.imu_reader import IMUReader, MotionState  # noqa: E402
+from backend.input_reader import InputReader, InputState  # noqa: E402
+from backend.profile_manager import Profile, ProfileManager  # noqa: E402
+from backend.trackpad_mouse import TrackpadMouse  # noqa: E402
 
 logger = decky.logger if hasattr(decky, "logger") else logging.getLogger("deck-controller")
 
@@ -95,8 +107,33 @@ class Plugin:
         logger.info("Deck Controller plugin uninstalling")
         await self._unload()
 
+    def _toggle_gamepad_mode(self) -> None:
+        """Toggle between gamepad mode (input to BT host) and local mode.
+
+        Called by InputReader when L4+R4 combo is pressed.
+        """
+        new_state = self.input_reader.toggle_grab()
+        if new_state:
+            logger.info("Gamepad mode ENABLED — input forwarded to BT host")
+        else:
+            logger.info("Gamepad mode DISABLED — Steam Deck controls restored")
+            # Send neutral report to release all buttons/axes on host
+            neutral = pack_report(0, 0, 0, 0, 0, 0, 0, DPAD_NEUTRAL)
+            self.bt_service.send_report(neutral)
+
     def _on_input_state_change(self, state: InputState) -> None:
         """Callback for input state changes — sends HID reports based on active profile."""
+        if not hasattr(self, "_input_cb_count"):
+            self._input_cb_count = 0
+        self._input_cb_count += 1
+        if self._input_cb_count <= 5 or self._input_cb_count % 500 == 0:
+            logger.info(
+                "Input callback #%d: buttons=0x%04x lx=%d ly=%d",
+                self._input_cb_count,
+                state.buttons,
+                state.left_x,
+                state.left_y,
+            )
         profile = self.profile_manager.active_profile
 
         # Gamepad report
@@ -165,6 +202,7 @@ class Plugin:
             input_started = await self.input_reader.start(
                 callback=self._on_input_state_change,
                 grab=True,
+                toggle_callback=self._toggle_gamepad_mode,
             )
             if not input_started:
                 await self.bt_service.stop()
@@ -325,6 +363,44 @@ class Plugin:
         except Exception as e:
             logger.error("Error removing device %s: %s", address, e)
             return {"success": False, "error": str(e)}
+
+    async def log_frontend_error(
+        self, error: str, stack: str = "", component: str = "", url: str = ""
+    ) -> dict[str, Any]:
+        """Log a frontend error to file and decky logger."""
+        settings_dir = os.environ.get(
+            "DECKY_PLUGIN_SETTINGS_DIR",
+            os.path.expanduser("~/homebrew/settings/deck-controller"),
+        )
+        log_path = os.path.join(settings_dir, "frontend-errors.log")
+        os.makedirs(settings_dir, exist_ok=True)
+
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        entry = f"[{ts}] error={error}"
+        if component:
+            entry += f" component={component}"
+        if url:
+            entry += f" url={url}"
+        if stack:
+            entry += f"\n  stack: {stack}"
+        entry += "\n"
+
+        logger.error("Frontend error: %s (component=%s)", error, component)
+
+        try:
+            with open(log_path, "a") as f:
+                f.write(entry)
+
+            # Truncate if > 100KB: keep last half of lines
+            if os.path.getsize(log_path) > 100 * 1024:
+                with open(log_path, "r") as f:
+                    lines = f.readlines()
+                with open(log_path, "w") as f:
+                    f.writelines(lines[len(lines) // 2 :])
+        except Exception as e:
+            logger.error("Failed to write frontend error log: %s", e)
+
+        return {"success": True}
 
     # --- Profile RPC Methods ---
 

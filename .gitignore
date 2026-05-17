@@ -17,3 +17,6 @@ docs/.reviews/launchd-*.log
 # Wiki checkout (local only)
 .wiki-checkout/
 .coverage
+
+# Steam Deck connection config (contains IP/credentials)
+.env.deck
