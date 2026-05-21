@@ -27,6 +27,8 @@ from backend.hid_descriptor import (
     GAMEPAD_REPORT_DESCRIPTOR,
     MOUSE_REPORT_DESCRIPTOR,
     MOTION_REPORT_DESCRIPTOR,
+    TRACKPAD_LEFT_REPORT_DESCRIPTOR,
+    TRACKPAD_RIGHT_REPORT_DESCRIPTOR,
     REPORT_SIZE,
     pack_motion_report,
     pack_mouse_report,
@@ -49,7 +51,13 @@ class TestDescriptors:
         assert isinstance(MOTION_REPORT_DESCRIPTOR, bytes)
 
     def test_composite_descriptor_is_concatenation(self):
-        expected = GAMEPAD_REPORT_DESCRIPTOR + MOUSE_REPORT_DESCRIPTOR + MOTION_REPORT_DESCRIPTOR
+        expected = (
+            GAMEPAD_REPORT_DESCRIPTOR
+            + MOUSE_REPORT_DESCRIPTOR
+            + MOTION_REPORT_DESCRIPTOR
+            + TRACKPAD_LEFT_REPORT_DESCRIPTOR
+            + TRACKPAD_RIGHT_REPORT_DESCRIPTOR
+        )
         assert COMPOSITE_REPORT_DESCRIPTOR == expected
 
     def test_report_size_is_15(self):

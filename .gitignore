@@ -10,13 +10,12 @@ __pycache__/
 py_modules/
 
 # Local review automation outputs
-docs/.reviews/logs/
-docs/.reviews/*-output.log
-docs/.reviews/launchd-*.log
+docs/.reviews/
 
 # Wiki checkout (local only)
 .wiki-checkout/
 .coverage
+coverage/
 
 # Steam Deck connection config (contains IP/credentials)
 .env.deck

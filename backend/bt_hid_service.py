@@ -182,14 +182,14 @@ async def _l2cap_async_connect(bdaddr: str, psm: int) -> int:
             raise asyncio.TimeoutError(f"connect({bdaddr}:{psm}) timed out")
 
         # Check SO_ERROR
-        err = ctypes.c_int(0)
-        errlen = ctypes.c_int(ctypes.sizeof(err))
+        sock_err = ctypes.c_int(0)
+        errlen = ctypes.c_int(ctypes.sizeof(sock_err))
         _libc.getsockopt(
-            fd, socket.SOL_SOCKET, socket.SO_ERROR, ctypes.byref(err), ctypes.byref(errlen)
+            fd, socket.SOL_SOCKET, socket.SO_ERROR, ctypes.byref(sock_err), ctypes.byref(errlen)
         )
-        if err.value != 0:
+        if sock_err.value != 0:
             os.close(fd)
-            raise OSError(err.value, f"connect({bdaddr}:{psm}): {os.strerror(err.value)}")
+            raise OSError(sock_err.value, f"connect({bdaddr}:{psm}): {os.strerror(sock_err.value)}")
         return fd
 
     return await asyncio.wait_for(loop.run_in_executor(None, _connect_thread), timeout=15)
@@ -634,6 +634,7 @@ class BTHIDService:
                 logger.info("Set device class to %s via dbus-send", device_class)
                 return True
             logger.warning("dbus-send class failed: %s", result.stderr.strip())
+            return False
         except (subprocess.SubprocessError, OSError) as e:
             logger.warning("Failed to set device class via dbus-send: %s", e)
             return False
@@ -783,11 +784,13 @@ class BTHIDService:
             import selectors
 
             sel = selectors.DefaultSelector()
-            sel.register(self._sdp_proc.stdout, selectors.EVENT_READ)
+            stdout = self._sdp_proc.stdout
+            assert stdout is not None, "SDP helper stdout is None"
+            sel.register(stdout, selectors.EVENT_READ)
             ready = sel.select(timeout=5)
             sel.close()
             if ready:
-                line = self._sdp_proc.stdout.readline().decode().strip()
+                line = stdout.readline().decode().strip()
                 if line == "REGISTERED":
                     logger.info(
                         "HID profile registered (persistent helper pid=%d)", self._sdp_proc.pid
@@ -796,7 +799,8 @@ class BTHIDService:
             # Helper didn't respond or crashed
             stderr = ""
             if self._sdp_proc.poll() is not None:
-                stderr = (self._sdp_proc.stderr.read() or b"").decode().strip()
+                stderr_pipe = self._sdp_proc.stderr
+                stderr = (stderr_pipe.read() if stderr_pipe is not None else b"").decode().strip()
             logger.warning("SDP helper failed: %s", stderr or "timeout")
             self._kill_sdp_helper()
             return False
@@ -970,7 +974,7 @@ class BTHIDService:
                         logger.info("Control channel accepted from %s", ctrl_addr)
 
                         client_fd, intr_addr = await asyncio.wait_for(
-                            _l2cap_async_accept(self._interrupt_fd), timeout=10.0
+                            _l2cap_async_accept(self._interrupt_fd or 0), timeout=10.0
                         )
                         self._interrupt_client_fd = client_fd
                         logger.info("Interrupt channel accepted from %s", intr_addr)

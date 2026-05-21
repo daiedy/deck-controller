@@ -242,9 +242,169 @@ MOTION_REPORT_DESCRIPTOR: bytes = bytes(
     ]
 )
 
-# Composite descriptor: Gamepad + Mouse + Motion
+# Left Trackpad HID Report Descriptor (Digitizer / Touch Pad)
+# Report ID: 0x04
+# Layout (per report, excluding Report ID byte):
+#   - Contact / Tip Switch  (1 bit) — finger touching
+#   - Click                 (1 bit) — physical click press
+#   - Padding               (6 bits) — byte alignment
+#   - X absolute            (16-bit, 0–32767)
+#   - Y absolute            (16-bit, 0–32767)
+# Total data: 5 bytes  (6 bytes on the wire including Report ID)
+TRACKPAD_LEFT_REPORT_DESCRIPTOR: bytes = bytes(
+    [
+        0x05,
+        0x0D,  # Usage Page (Digitizer)
+        0x09,
+        0x05,  # Usage (Touch Pad)
+        0xA1,
+        0x01,  # Collection (Application)
+        0x85,
+        0x04,  #   Report ID (4)
+        0x09,
+        0x22,  #   Usage (Finger)
+        0xA1,
+        0x02,  #   Collection (Logical)
+        # Tip Switch — 1 bit (finger contact)
+        0x09,
+        0x42,  #     Usage (Tip Switch)
+        0x15,
+        0x00,  #     Logical Minimum (0)
+        0x25,
+        0x01,  #     Logical Maximum (1)
+        0x75,
+        0x01,  #     Report Size (1)
+        0x95,
+        0x01,  #     Report Count (1)
+        0x81,
+        0x02,  #     Input (Data, Var, Abs)
+        # Click button — 1 bit (physical click)
+        0x05,
+        0x09,  #     Usage Page (Button)
+        0x09,
+        0x01,  #     Usage (Button 1 — click)
+        0x15,
+        0x00,  #     Logical Minimum (0)
+        0x25,
+        0x01,  #     Logical Maximum (1)
+        0x75,
+        0x01,  #     Report Size (1)
+        0x95,
+        0x01,  #     Report Count (1)
+        0x81,
+        0x02,  #     Input (Data, Var, Abs)
+        # 6-bit padding to byte-align
+        0x75,
+        0x06,  #     Report Size (6)
+        0x95,
+        0x01,  #     Report Count (1)
+        0x81,
+        0x03,  #     Input (Cnst, Var, Abs)
+        # X, Y absolute position — 16-bit unsigned (0–32767)
+        0x05,
+        0x01,  #     Usage Page (Generic Desktop)
+        0x09,
+        0x30,  #     Usage (X)
+        0x09,
+        0x31,  #     Usage (Y)
+        0x15,
+        0x00,  #     Logical Minimum (0)
+        0x26,
+        0xFF,
+        0x7F,  #     Logical Maximum (32767)
+        0x75,
+        0x10,  #     Report Size (16)
+        0x95,
+        0x02,  #     Report Count (2)
+        0x81,
+        0x02,  #     Input (Data, Var, Abs)
+        0xC0,  #   End Collection (Logical)
+        0xC0,  # End Collection (Application)
+    ]
+)
+
+# Right Trackpad HID Report Descriptor (Digitizer / Touch Pad)
+# Report ID: 0x05
+# Layout identical to left trackpad — only Report ID differs.
+TRACKPAD_RIGHT_REPORT_DESCRIPTOR: bytes = bytes(
+    [
+        0x05,
+        0x0D,  # Usage Page (Digitizer)
+        0x09,
+        0x05,  # Usage (Touch Pad)
+        0xA1,
+        0x01,  # Collection (Application)
+        0x85,
+        0x05,  #   Report ID (5)
+        0x09,
+        0x22,  #   Usage (Finger)
+        0xA1,
+        0x02,  #   Collection (Logical)
+        # Tip Switch — 1 bit (finger contact)
+        0x09,
+        0x42,  #     Usage (Tip Switch)
+        0x15,
+        0x00,  #     Logical Minimum (0)
+        0x25,
+        0x01,  #     Logical Maximum (1)
+        0x75,
+        0x01,  #     Report Size (1)
+        0x95,
+        0x01,  #     Report Count (1)
+        0x81,
+        0x02,  #     Input (Data, Var, Abs)
+        # Click button — 1 bit (physical click)
+        0x05,
+        0x09,  #     Usage Page (Button)
+        0x09,
+        0x01,  #     Usage (Button 1 — click)
+        0x15,
+        0x00,  #     Logical Minimum (0)
+        0x25,
+        0x01,  #     Logical Maximum (1)
+        0x75,
+        0x01,  #     Report Size (1)
+        0x95,
+        0x01,  #     Report Count (1)
+        0x81,
+        0x02,  #     Input (Data, Var, Abs)
+        # 6-bit padding to byte-align
+        0x75,
+        0x06,  #     Report Size (6)
+        0x95,
+        0x01,  #     Report Count (1)
+        0x81,
+        0x03,  #     Input (Cnst, Var, Abs)
+        # X, Y absolute position — 16-bit unsigned (0–32767)
+        0x05,
+        0x01,  #     Usage Page (Generic Desktop)
+        0x09,
+        0x30,  #     Usage (X)
+        0x09,
+        0x31,  #     Usage (Y)
+        0x15,
+        0x00,  #     Logical Minimum (0)
+        0x26,
+        0xFF,
+        0x7F,  #     Logical Maximum (32767)
+        0x75,
+        0x10,  #     Report Size (16)
+        0x95,
+        0x02,  #     Report Count (2)
+        0x81,
+        0x02,  #     Input (Data, Var, Abs)
+        0xC0,  #   End Collection (Logical)
+        0xC0,  # End Collection (Application)
+    ]
+)
+
+# Composite descriptor: Gamepad + Mouse + Motion + Left Trackpad + Right Trackpad
 COMPOSITE_REPORT_DESCRIPTOR: bytes = (
-    GAMEPAD_REPORT_DESCRIPTOR + MOUSE_REPORT_DESCRIPTOR + MOTION_REPORT_DESCRIPTOR
+    GAMEPAD_REPORT_DESCRIPTOR
+    + MOUSE_REPORT_DESCRIPTOR
+    + MOTION_REPORT_DESCRIPTOR
+    + TRACKPAD_LEFT_REPORT_DESCRIPTOR
+    + TRACKPAD_RIGHT_REPORT_DESCRIPTOR
 )
 
 # Report format:
@@ -258,6 +418,13 @@ COMPOSITE_REPORT_DESCRIPTOR: bytes = (
 #   R2 (1 byte): uint8
 #   D-pad (1 byte): lower nibble = hat switch (0-7, 0x0F = neutral)
 # Total: 15 bytes
+
+# Report ID constants
+GAMEPAD_REPORT_ID: int = 1
+MOUSE_REPORT_ID: int = 2
+MOTION_REPORT_ID: int = 3
+TRACKPAD_LEFT_REPORT_ID: int = 4
+TRACKPAD_RIGHT_REPORT_ID: int = 5
 
 _AXES_FORMAT: str = "<hhhhBBB"
 REPORT_SIZE: int = 1 + 3 + struct.calcsize(_AXES_FORMAT)  # 15 bytes
@@ -379,3 +546,36 @@ def pack_motion_report(
         max(-32768, min(32767, accel_y)),
         max(-32768, min(32767, accel_z)),
     )
+
+
+def pack_trackpad_report(
+    report_id: int,
+    contact: bool,
+    x: int,
+    y: int,
+    click: bool,
+) -> bytes:
+    """Pack trackpad state into an HID report.
+
+    Both the left (Report ID 4) and right (Report ID 5) trackpads share the
+    same report layout:
+        byte 0  — Report ID
+        byte 1  — flags: bit 0 = contact (Tip Switch), bit 1 = click, bits 2-7 = padding
+        bytes 2-3 — X absolute position (uint16, little-endian, 0–32767)
+        bytes 4-5 — Y absolute position (uint16, little-endian, 0–32767)
+
+    Args:
+        report_id: TRACKPAD_LEFT_REPORT_ID (4) or TRACKPAD_RIGHT_REPORT_ID (5).
+        contact: True if a finger is touching the pad (Tip Switch).
+        x: Absolute X position (0 to 32767).
+        y: Absolute Y position (0 to 32767).
+        click: True if the physical click is pressed.
+
+    Returns:
+        6-byte packed HID report including the report ID prefix.
+    """
+    x = max(0, min(32767, x))
+    y = max(0, min(32767, y))
+    # Bit 0 = contact (Tip Switch), Bit 1 = click; bits 2-7 remain zero (padding)
+    flags: int = (int(contact) & 0x01) | ((int(click) & 0x01) << 1)
+    return struct.pack("<BBHH", report_id, flags, x, y)

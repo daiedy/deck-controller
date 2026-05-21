@@ -90,25 +90,30 @@ class TestSendReport:
 
     def test_sends_with_header(self):
         svc = BTHIDService()
-        mock_sock = MagicMock()
-        svc._interrupt_client = mock_sock
+        svc._interrupt_client_fd = 42
+        svc._protocol_ready = True
 
-        result = svc.send_report(b"\x01\x00\x00")
+        with patch("backend.bt_hid_service.os.write") as mock_write:
+            mock_write.return_value = 4
+            result = svc.send_report(b"\x01\x00\x00")
+
         assert result is True
-        mock_sock.send.assert_called_once_with(b"\xa1\x01\x00\x00")
+        mock_write.assert_called_once_with(42, b"\xa1\x01\x00\x00")
 
     def test_oserror_disconnects(self):
         svc = BTHIDService()
-        mock_sock = MagicMock()
-        mock_sock.send.side_effect = OSError("Connection lost")
-        svc._interrupt_client = mock_sock
-        svc._control_client = MagicMock()
+        svc._interrupt_client_fd = 42
+        svc._control_client_fd = 43
+        svc._protocol_ready = True
         svc._connected_device = ConnectionInfo("AA:BB:CC:DD:EE:FF")
 
-        result = svc.send_report(b"\x01\x00")
+        with patch("backend.bt_hid_service.os.write", side_effect=OSError("Connection lost")), \
+             patch("backend.bt_hid_service.os.close"):
+            result = svc.send_report(b"\x01\x00")
+
         assert result is False
         assert svc._connected_device is None
-        assert svc._interrupt_client is None
+        assert svc._interrupt_client_fd is None
 
 
 # ---- _handle_disconnect ----
@@ -117,58 +122,60 @@ class TestSendReport:
 class TestHandleDisconnect:
     def test_closes_client_sockets(self):
         svc = BTHIDService()
-        ctrl = MagicMock()
-        intr = MagicMock()
-        svc._control_client = ctrl
-        svc._interrupt_client = intr
+        svc._control_client_fd = 42
+        svc._interrupt_client_fd = 43
         svc._connected_device = ConnectionInfo("AA:BB:CC:DD:EE:FF")
 
-        svc._handle_disconnect()
+        with patch("backend.bt_hid_service.os.close") as mock_close:
+            svc._handle_disconnect()
+            assert mock_close.call_count == 2
 
-        ctrl.close.assert_called_once()
-        intr.close.assert_called_once()
         assert svc._connected_device is None
-        assert svc._control_client is None
-        assert svc._interrupt_client is None
+        assert svc._control_client_fd is None
+        assert svc._interrupt_client_fd is None
 
 
 # ---- _set_adapter_property ----
 
 
 class TestSetAdapterProperty:
+    _BUSCTL_PREFIX = [
+        "busctl", "set-property", "--system",
+        "org.bluez", "/org/bluez/hci0", "org.bluez.Adapter1",
+    ]
+
+    def _assert_cmd(self, mock_run, expected_cmd):
+        """Assert only the positional command arg (ignore env kwarg added by _subprocess_run)."""
+        args, kwargs = mock_run.call_args
+        assert args[0] == expected_cmd
+        assert kwargs.get("capture_output") is True
+        assert kwargs.get("text") is True
+        assert kwargs.get("timeout") == 5
+
     @patch("backend.bt_hid_service.subprocess.run")
     def test_alias(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess([], 0)
         svc = BTHIDService()
         assert svc._set_adapter_property("alias", "MyDeck") is True
-        mock_run.assert_called_once_with(
-            ["bluetoothctl", "system-alias", "MyDeck"],
-            capture_output=True, text=True, timeout=5,
-        )
+        self._assert_cmd(mock_run, self._BUSCTL_PREFIX + ["Alias", "s", "MyDeck"])
 
     @patch("backend.bt_hid_service.subprocess.run")
     def test_discoverable_on(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess([], 0)
         svc = BTHIDService()
         assert svc._set_adapter_property("discoverable", True) is True
-        mock_run.assert_called_once_with(
-            ["bluetoothctl", "discoverable", "on"],
-            capture_output=True, text=True, timeout=5,
-        )
+        self._assert_cmd(mock_run, self._BUSCTL_PREFIX + ["Discoverable", "b", "true"])
 
     @patch("backend.bt_hid_service.subprocess.run")
     def test_pairable_off(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess([], 0)
         svc = BTHIDService()
         assert svc._set_adapter_property("pairable", False) is True
-        mock_run.assert_called_once_with(
-            ["bluetoothctl", "pairable", "off"],
-            capture_output=True, text=True, timeout=5,
-        )
+        self._assert_cmd(mock_run, self._BUSCTL_PREFIX + ["Pairable", "b", "false"])
 
     @patch("backend.bt_hid_service.subprocess.run")
     def test_failure_returns_false(self, mock_run):
-        mock_run.return_value = subprocess.CompletedProcess([], 1)
+        mock_run.return_value = subprocess.CompletedProcess([], 1, stderr="")
         svc = BTHIDService()
         assert svc._set_adapter_property("discoverable", True) is False
 
@@ -183,48 +190,42 @@ class TestSetAdapterProperty:
 
 
 class TestSetDeviceClass:
-    @patch("backend.bt_hid_service.subprocess.run")
-    def test_success(self, mock_run):
-        mock_run.return_value = subprocess.CompletedProcess([], 0)
+    def test_success(self):
         svc = BTHIDService()
-        assert svc._set_device_class("0x002508") is True
-        mock_run.assert_called_once_with(
-            ["hciconfig", "hci0", "class", "0x002508"],
-            capture_output=True, text=True, timeout=5,
-        )
+        with patch.object(svc, "_set_device_class_mgmt_socket", return_value=True):
+            assert svc._set_device_class("0x002508") is True
 
+    @patch("backend.bt_hid_service._time_mod.sleep")
+    @patch("backend.bt_hid_service.pty.openpty", return_value=(99, 100))
+    @patch("backend.bt_hid_service.os.close")
     @patch("backend.bt_hid_service.subprocess.run")
-    def test_failure(self, mock_run):
+    def test_failure(self, mock_run, mock_os_close, mock_openpty, mock_sleep):
         mock_run.return_value = subprocess.CompletedProcess([], 1, stderr="err")
         svc = BTHIDService()
-        assert svc._set_device_class("0x002508") is False
+        with patch.object(svc, "_set_device_class_mgmt_socket", return_value=False):
+            assert svc._set_device_class("0x002508") is False
 
 
 # ---- _open_l2cap_sockets ----
 
 
 class TestOpenL2CAPSockets:
-    @patch("backend.bt_hid_service.socket")
-    def test_success(self, mock_socket_mod):
-        mock_ctrl = MagicMock()
-        mock_intr = MagicMock()
-        mock_socket_mod.socket.side_effect = [mock_ctrl, mock_intr]
-        mock_socket_mod.SOL_SOCKET = 1
-        mock_socket_mod.SO_REUSEADDR = 2
-
+    def test_success(self):
         svc = BTHIDService()
-        assert svc._open_l2cap_sockets() is True
-        assert svc._control_socket is mock_ctrl
-        assert svc._interrupt_socket is mock_intr
-        assert mock_socket_mod.socket.call_count == 2
+        with patch("backend.bt_hid_service._l2cap_socket", side_effect=[10, 11]), \
+             patch("backend.bt_hid_service._l2cap_setsockopt_reuse"), \
+             patch("backend.bt_hid_service._l2cap_bind"), \
+             patch("backend.bt_hid_service._l2cap_listen"), \
+             patch("backend.bt_hid_service._l2cap_set_nonblock"):
+            assert svc._open_l2cap_sockets() is True
+            assert svc._control_fd == 10
+            assert svc._interrupt_fd == 11
 
-    @patch("backend.bt_hid_service.socket")
-    def test_oserror_closes_sockets(self, mock_socket_mod):
-        mock_socket_mod.socket.side_effect = OSError("socket failed")
-
+    def test_oserror_closes_sockets(self):
         svc = BTHIDService()
-        assert svc._open_l2cap_sockets() is False
-        assert svc._control_socket is None
+        with patch("backend.bt_hid_service._l2cap_socket", side_effect=OSError("socket failed")):
+            assert svc._open_l2cap_sockets() is False
+            assert svc._control_fd is None
 
 
 # ---- _close_sockets ----
@@ -233,17 +234,19 @@ class TestOpenL2CAPSockets:
 class TestCloseSockets:
     def test_closes_all(self):
         svc = BTHIDService()
-        svc._control_socket = MagicMock()
-        svc._interrupt_socket = MagicMock()
-        svc._control_client = MagicMock()
-        svc._interrupt_client = MagicMock()
+        svc._control_fd = 10
+        svc._interrupt_fd = 11
+        svc._control_client_fd = 12
+        svc._interrupt_client_fd = 13
 
-        svc._close_sockets()
+        with patch("backend.bt_hid_service.os.close") as mock_close:
+            svc._close_sockets()
+            assert mock_close.call_count == 4
 
-        assert svc._control_socket is None
-        assert svc._interrupt_socket is None
-        assert svc._control_client is None
-        assert svc._interrupt_client is None
+        assert svc._control_fd is None
+        assert svc._interrupt_fd is None
+        assert svc._control_client_fd is None
+        assert svc._interrupt_client_fd is None
 
     def test_handles_none(self):
         svc = BTHIDService()
@@ -308,8 +311,10 @@ class TestRestoreBluetoothd:
     def test_restores_service(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess([], 0)
         svc = BTHIDService()
-        svc._restore_bluetoothd()
-        assert mock_run.call_count == 2  # pkill + systemctl start
+        with patch("backend.bt_hid_service.os.path.isfile", return_value=False):
+            svc._restore_bluetoothd()
+        # steamos-readonly disable + enable + systemctl restart
+        assert mock_run.call_count == 3
 
     @patch("backend.bt_hid_service.subprocess.run")
     def test_restore_oserror(self, mock_run):
@@ -338,23 +343,32 @@ class TestLoadSdpRecord:
 
 
 class TestRegisterSdpRecord:
-    @patch("backend.bt_hid_service.os.path.isfile", return_value=True)
-    @patch("backend.bt_hid_service.subprocess.run")
-    def test_success(self, mock_run, mock_isfile):
-        mock_run.return_value = subprocess.CompletedProcess([], 0)
+    def test_success(self):
         svc = BTHIDService()
-        assert svc._register_sdp_record() is True
+        mock_proc = MagicMock()
+        mock_proc.stdout.readline.return_value = b"REGISTERED\n"
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 1234
+        mock_sel = MagicMock()
+        mock_sel.select.return_value = [(MagicMock(), 1)]
+
+        with patch("backend.bt_hid_service.subprocess.run"), \
+             patch("backend.bt_hid_service.subprocess.Popen", return_value=mock_proc), \
+             patch("selectors.DefaultSelector", return_value=mock_sel):
+            assert svc._register_sdp_record() is True
 
     @patch("backend.bt_hid_service.os.path.isfile", return_value=False)
     def test_missing_file(self, mock_isfile):
         svc = BTHIDService()
-        assert svc._register_sdp_record() is False
+        with patch("backend.bt_hid_service.subprocess.run"):
+            assert svc._register_sdp_record() is False
 
     @patch("backend.bt_hid_service.os.path.isfile", return_value=True)
-    @patch("backend.bt_hid_service.subprocess.run", side_effect=OSError("no sdptool"))
-    def test_oserror(self, mock_run, mock_isfile):
+    def test_oserror(self, mock_isfile):
         svc = BTHIDService()
-        assert svc._register_sdp_record() is False
+        with patch("backend.bt_hid_service.subprocess.run"), \
+             patch("backend.bt_hid_service.subprocess.Popen", side_effect=OSError("no python")):
+            assert svc._register_sdp_record() is False
 
 
 # ---- _set_device_class extended ----
@@ -375,10 +389,15 @@ class TestRestartBluetoothd:
         svc = BTHIDService()
 
         mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"bluetoothd --noplugin\n", b""))
+        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
         mock_proc.returncode = 0
 
-        with patch("backend.bt_hid_service.asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+        with patch.object(svc, "_run_cmd", new_callable=AsyncMock, return_value=0), \
+             patch("backend.bt_hid_service.os.makedirs"), \
+             patch("builtins.open", MagicMock()), \
+             patch.object(svc, "_configure_bluetooth_main_conf"), \
+             patch("backend.bt_hid_service.asyncio.create_subprocess_exec",
+                   new_callable=AsyncMock) as mock_exec:
             mock_exec.return_value = mock_proc
             result = await svc._restart_bluetoothd_with_plugin_flag()
             assert result is True
@@ -464,11 +483,14 @@ class TestRestoreBluetooth:
     def test_kills_and_restarts(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess([], 0)
         svc = BTHIDService()
-        svc._restore_bluetoothd()
-        assert mock_run.call_count == 2
+        with patch("backend.bt_hid_service.os.path.isfile", return_value=False):
+            svc._restore_bluetoothd()
+        # steamos-readonly disable + enable + systemctl restart bluetooth
+        assert mock_run.call_count == 3
         calls = [c[0][0] for c in mock_run.call_args_list]
-        assert calls[0] == ["pkill", "-f", "bluetoothd.*-P input"]
-        assert calls[1] == ["systemctl", "start", "bluetooth"]
+        assert calls[0] == ["steamos-readonly", "disable"]
+        assert calls[1] == ["steamos-readonly", "enable"]
+        assert calls[2] == ["systemctl", "restart", "bluetooth"]
 
 
 # ---- _load_sdp_record ----

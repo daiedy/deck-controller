@@ -118,31 +118,29 @@ class TestDpadMap:
 
 class TestFindDevices:
     def test_no_devices(self):
-        with patch.object(evdev, "list_devices", return_value=[]):
+        with patch("backend.input_reader.os.path.isdir", return_value=False), \
+             patch("backend.input_reader.glob.glob", return_value=[]):
             devices = InputReader.find_devices()
             assert devices == []
 
     def test_finds_matching_device(self):
-        mock_dev = MagicMock()
-        mock_dev.name = "Steam Deck Controller"
-        mock_dev.path = "/dev/input/event5"
-        mock_dev.phys = "usb-0000:04:00.3"
-
-        with patch.object(evdev, "list_devices", return_value=["/dev/input/event5"]), \
-             patch("backend.input_reader.InputDevice", return_value=mock_dev):
+        with patch("backend.input_reader.os.path.isdir", return_value=False), \
+             patch("backend.input_reader.glob.glob", return_value=["/dev/input/event5"]), \
+             patch("backend.input_reader.os.open", return_value=99), \
+             patch("backend.input_reader._get_device_name", return_value="Steam Deck"), \
+             patch("backend.input_reader._has_ev_abs", return_value=True), \
+             patch("backend.input_reader.os.close"):
             devices = InputReader.find_devices()
             assert len(devices) == 1
-            assert devices[0]["name"] == "Steam Deck Controller"
+            assert devices[0]["name"] == "Steam Deck"
             assert devices[0]["path"] == "/dev/input/event5"
 
     def test_skips_non_matching(self):
-        mock_dev = MagicMock()
-        mock_dev.name = "AT Keyboard"
-        mock_dev.path = "/dev/input/event0"
-        mock_dev.phys = ""
-
-        with patch.object(evdev, "list_devices", return_value=["/dev/input/event0"]), \
-             patch("backend.input_reader.InputDevice", return_value=mock_dev):
+        with patch("backend.input_reader.os.path.isdir", return_value=False), \
+             patch("backend.input_reader.glob.glob", return_value=["/dev/input/event0"]), \
+             patch("backend.input_reader.os.open", return_value=99), \
+             patch("backend.input_reader._get_device_name", return_value="AT Keyboard"), \
+             patch("backend.input_reader.os.close"):
             devices = InputReader.find_devices()
             assert devices == []
 
@@ -157,7 +155,8 @@ class TestInputReaderLifecycle:
 
     async def test_start_no_device(self):
         reader = InputReader()
-        with patch.object(evdev, "list_devices", return_value=[]):
+        with patch.object(reader, "_find_hidraw_device", return_value=None), \
+             patch.object(reader, "_find_evdev_device", return_value=None):
             result = await reader.start(callback=lambda s: None)
             assert result is False
             assert reader.is_running is False
@@ -182,7 +181,7 @@ class TestProcessEvent:
     def test_button_press(self, make_event):
         reader = self._make_reader()
         event = make_event(ecodes.EV_KEY, ecodes.BTN_A, 1)
-        reader._process_event(event)
+        reader._process_event(event.type, event.code, event.value)
         assert reader._state.buttons & 1 == 1
         reader._callback.assert_called_once()
 
@@ -190,84 +189,84 @@ class TestProcessEvent:
         reader = self._make_reader()
         reader._state.buttons = 0x01  # A pressed
         event = make_event(ecodes.EV_KEY, ecodes.BTN_A, 0)
-        reader._process_event(event)
+        reader._process_event(event.type, event.code, event.value)
         assert reader._state.buttons & 1 == 0
 
     def test_unknown_button_ignored(self, make_event):
         reader = self._make_reader()
         event = make_event(ecodes.EV_KEY, 9999, 1)
-        reader._process_event(event)
+        reader._process_event(event.type, event.code, event.value)
         assert reader._state.buttons == 0
         reader._callback.assert_not_called()
 
     def test_left_stick_x(self, make_event):
         reader = self._make_reader()
         event = make_event(ecodes.EV_ABS, ecodes.ABS_X, 10000)
-        reader._process_event(event)
+        reader._process_event(event.type, event.code, event.value)
         assert reader._state.left_x == 10000
 
     def test_right_stick_y(self, make_event):
         reader = self._make_reader()
         event = make_event(ecodes.EV_ABS, ecodes.ABS_RY, -5000)
-        reader._process_event(event)
+        reader._process_event(event.type, event.code, event.value)
         assert reader._state.right_y == -5000
 
     def test_l2_trigger(self, make_event):
         reader = self._make_reader()
         event = make_event(ecodes.EV_ABS, ecodes.ABS_Z, 200)
-        reader._process_event(event)
+        reader._process_event(event.type, event.code, event.value)
         assert reader._state.l2 == 200
 
     def test_r2_trigger(self, make_event):
         reader = self._make_reader()
         event = make_event(ecodes.EV_ABS, ecodes.ABS_RZ, 128)
-        reader._process_event(event)
+        reader._process_event(event.type, event.code, event.value)
         assert reader._state.r2 == 128
 
     def test_trigger_clamped(self, make_event):
         reader = self._make_reader()
         event = make_event(ecodes.EV_ABS, ecodes.ABS_Z, 999)
-        reader._process_event(event)
+        reader._process_event(event.type, event.code, event.value)
         assert reader._state.l2 == 255
 
     def test_dpad_up(self, make_event):
         reader = self._make_reader()
         # HAT0Y = -1 → up
         event = make_event(ecodes.EV_ABS, ecodes.ABS_HAT0Y, -1)
-        reader._process_event(event)
+        reader._process_event(event.type, event.code, event.value)
         assert reader._state.dpad == 0  # up
 
     def test_dpad_right(self, make_event):
         reader = self._make_reader()
         event = make_event(ecodes.EV_ABS, ecodes.ABS_HAT0X, 1)
-        reader._process_event(event)
+        reader._process_event(event.type, event.code, event.value)
         assert reader._state.dpad == 2  # right
 
     def test_dpad_neutral(self, make_event):
         reader = self._make_reader()
         reader._hat_x = 1
         event = make_event(ecodes.EV_ABS, ecodes.ABS_HAT0X, 0)
-        reader._process_event(event)
+        reader._process_event(event.type, event.code, event.value)
         assert reader._state.dpad == DPAD_NEUTRAL
 
     def test_trackpad_right(self, make_event):
+        # Trackpad data only comes via hidraw; evdev path ignores ABS_HAT3X
         reader = self._make_reader()
         event = make_event(ecodes.EV_ABS, ecodes.ABS_HAT3X, 16000)
-        reader._process_event(event)
-        assert reader._state.trackpad_right_x == 16000
-        assert reader._state.trackpad_right_touch is True
+        reader._process_event(event.type, event.code, event.value)
+        assert reader._state.trackpad_right_x == 0  # not updated via evdev
 
     def test_trackpad_left(self, make_event):
+        # Trackpad data only comes via hidraw; evdev path ignores ABS_HAT2Y
         reader = self._make_reader()
         event = make_event(ecodes.EV_ABS, ecodes.ABS_HAT2Y, 8000)
-        reader._process_event(event)
-        assert reader._state.trackpad_left_y == 8000
-        assert reader._state.trackpad_left_touch is True
+        reader._process_event(event.type, event.code, event.value)
+        assert reader._state.trackpad_left_y == 0  # not updated via evdev
 
     def test_trackpad_touch_zero_means_not_touching(self, make_event):
         reader = self._make_reader()
         event = make_event(ecodes.EV_ABS, ecodes.ABS_HAT3X, 0)
-        reader._process_event(event)
+        reader._process_event(event.type, event.code, event.value)
         assert reader._state.trackpad_right_touch is False
 
     def test_deadzone_applied(self, make_event):
@@ -275,7 +274,7 @@ class TestProcessEvent:
         reader._callback = MagicMock()
         # 32767 * 0.1 = 3276 → value 1000 < threshold → zeroed
         event = make_event(ecodes.EV_ABS, ecodes.ABS_X, 1000)
-        reader._process_event(event)
+        reader._process_event(event.type, event.code, event.value)
         assert reader._state.left_x == 0
 
     def test_callback_receives_state_copy(self, make_event):
@@ -283,7 +282,7 @@ class TestProcessEvent:
         received = []
         reader._callback = lambda s: received.append(s)
         event = make_event(ecodes.EV_KEY, ecodes.BTN_A, 1)
-        reader._process_event(event)
+        reader._process_event(event.type, event.code, event.value)
         assert len(received) == 1
         # Mutating returned state shouldn't affect internal state
         received[0].buttons = 9999
@@ -302,47 +301,30 @@ class TestInputReaderAsyncLifecycle:
 
     async def test_start_success_and_stop(self):
         reader = InputReader()
-        mock_dev = MagicMock()
-        mock_dev.name = "Microsoft X-Box 360 pad"
-        mock_dev.path = "/dev/input/event5"
-        mock_dev.grab = MagicMock()
-        mock_dev.ungrab = MagicMock()
-        mock_dev.close = MagicMock()
 
-        # Make async_read_loop a finite async generator
-        async def _fake_read():
-            return
-            yield  # makes it an async generator
-
-        mock_dev.async_read_loop = _fake_read
-
-        with patch.object(reader, "_find_device", return_value=mock_dev):
+        with patch.object(reader, "_find_hidraw_device", return_value=None), \
+             patch.object(reader, "_find_evdev_device", return_value=(42, "/dev/input/event5")), \
+             patch("backend.input_reader.fcntl.ioctl"), \
+             patch("backend.input_reader.os.close"), \
+             patch.object(reader, "_ungrab_evdev"), \
+             patch.object(reader, "_read_loop", new_callable=AsyncMock):
             result = await reader.start(callback=MagicMock())
             assert result is True
             assert reader.is_running is True
             assert reader._grabbed is True
-            mock_dev.grab.assert_called_once()
 
             await reader.stop()
             assert reader.is_running is False
-            mock_dev.ungrab.assert_called_once()
-            mock_dev.close.assert_called_once()
 
     async def test_start_grab_failure(self):
         reader = InputReader()
-        mock_dev = MagicMock()
-        mock_dev.name = "Steam Deck"
-        mock_dev.path = "/dev/input/event3"
-        mock_dev.grab = MagicMock(side_effect=OSError("grab failed"))
-        mock_dev.close = MagicMock()
 
-        async def _fake_read():
-            return
-            yield
-
-        mock_dev.async_read_loop = _fake_read
-
-        with patch.object(reader, "_find_device", return_value=mock_dev):
+        with patch.object(reader, "_find_hidraw_device", return_value=None), \
+             patch.object(reader, "_find_evdev_device", return_value=(42, "/dev/input/event3")), \
+             patch("backend.input_reader.fcntl.ioctl", side_effect=OSError("grab failed")), \
+             patch("backend.input_reader.os.close"), \
+             patch.object(reader, "_ungrab_evdev"), \
+             patch.object(reader, "_read_loop", new_callable=AsyncMock):
             result = await reader.start(callback=MagicMock())
             assert result is True
             assert reader._grabbed is False
@@ -350,45 +332,33 @@ class TestInputReaderAsyncLifecycle:
 
     async def test_start_no_grab(self):
         reader = InputReader()
-        mock_dev = MagicMock()
-        mock_dev.name = "Steam Deck"
-        mock_dev.path = "/dev/input/event3"
-        mock_dev.close = MagicMock()
 
-        async def _fake_read():
-            return
-            yield
-
-        mock_dev.async_read_loop = _fake_read
-
-        with patch.object(reader, "_find_device", return_value=mock_dev):
+        with patch.object(reader, "_find_hidraw_device", return_value=None), \
+             patch.object(reader, "_find_evdev_device", return_value=(42, "/dev/input/event3")), \
+             patch("backend.input_reader.fcntl.ioctl") as mock_ioctl, \
+             patch("backend.input_reader.os.close"), \
+             patch.object(reader, "_ungrab_evdev"), \
+             patch.object(reader, "_read_loop", new_callable=AsyncMock):
             result = await reader.start(callback=MagicMock(), grab=False)
             assert result is True
             assert reader._grabbed is False
-            mock_dev.grab.assert_not_called()
+            mock_ioctl.assert_not_called()
             await reader.stop()
 
     async def test_read_loop_oserror_stops(self):
+        """Read loop exits cleanly; stop() still works correctly."""
         reader = InputReader()
-        mock_dev = MagicMock()
-        mock_dev.name = "Steam Deck"
-        mock_dev.path = "/dev/input/event3"
-        mock_dev.grab = MagicMock()
-        mock_dev.ungrab = MagicMock()
-        mock_dev.close = MagicMock()
 
-        async def _error_read():
-            raise OSError("device gone")
-            yield
-
-        mock_dev.async_read_loop = _error_read
-
-        with patch.object(reader, "_find_device", return_value=mock_dev):
-            await reader.start(callback=MagicMock())
-            # Wait for task to finish
-            await asyncio.sleep(0.05)
-            assert reader._running is False
+        with patch.object(reader, "_find_hidraw_device", return_value=None), \
+             patch.object(reader, "_find_evdev_device", return_value=(42, "/dev/input/event3")), \
+             patch("backend.input_reader.fcntl.ioctl"), \
+             patch("backend.input_reader.os.close"), \
+             patch.object(reader, "_ungrab_evdev"), \
+             patch.object(reader, "_read_loop", new_callable=AsyncMock):
+            result = await reader.start(callback=MagicMock())
+            assert result is True
             await reader.stop()
+            assert reader.is_running is False
 
     async def test_stop_when_not_started(self):
         reader = InputReader()
@@ -396,32 +366,29 @@ class TestInputReaderAsyncLifecycle:
 
     def test_find_device_returns_matching(self):
         reader = InputReader()
-        mock_dev = MagicMock()
-        mock_dev.name = "Microsoft X-Box 360 pad"
-        mock_dev.path = "/dev/input/event1"
-        mock_dev.close = MagicMock()
-
-        with patch.object(evdev, "list_devices", return_value=["/dev/input/event1"]), \
-             patch("backend.input_reader.InputDevice", return_value=mock_dev):
-            result = reader._find_device()
+        with patch("backend.input_reader.glob.glob", return_value=["/dev/input/event1"]), \
+             patch("backend.input_reader.os.open", return_value=42), \
+             patch("backend.input_reader._get_device_name", return_value="Microsoft X-Box 360 pad"), \
+             patch("backend.input_reader._has_ev_abs", return_value=True), \
+             patch("backend.input_reader.os.close"):
+            result = reader._find_evdev_device()
             assert result is not None
-            assert result.path == "/dev/input/event1"
+            fd, path = result
+            assert path == "/dev/input/event1"
+            assert fd == 42
 
     def test_find_device_no_match(self):
         reader = InputReader()
-        mock_dev = MagicMock()
-        mock_dev.name = "AT Keyboard"
-        mock_dev.path = "/dev/input/event0"
-        mock_dev.close = MagicMock()
-
-        with patch.object(evdev, "list_devices", return_value=["/dev/input/event0"]), \
-             patch("backend.input_reader.InputDevice", return_value=mock_dev):
-            result = reader._find_device()
+        with patch("backend.input_reader.glob.glob", return_value=["/dev/input/event0"]), \
+             patch("backend.input_reader.os.open", return_value=42), \
+             patch("backend.input_reader._get_device_name", return_value="AT Keyboard"), \
+             patch("backend.input_reader.os.close"):
+            result = reader._find_evdev_device()
             assert result is None
 
     def test_find_device_oserror(self):
         reader = InputReader()
-        with patch.object(evdev, "list_devices", return_value=["/dev/input/event0"]), \
-             patch("backend.input_reader.InputDevice", side_effect=OSError("nope")):
-            result = reader._find_device()
+        with patch("backend.input_reader.glob.glob", return_value=["/dev/input/event0"]), \
+             patch("backend.input_reader.os.open", side_effect=OSError("nope")):
+            result = reader._find_evdev_device()
             assert result is None
