@@ -247,6 +247,9 @@ class BTHIDService:
         self._send_queue: queue.Queue[Optional[bytes]] = queue.Queue(maxsize=8)
         self._send_thread: Optional[threading.Thread] = None
         self._send_thread_stop: threading.Event = threading.Event()
+        # Unix SEQPACKET socket used to receive connection fds from the BlueZ
+        # profile helper via NewConnection.  The helper holds the write end.
+        self._ipc_recv: Optional[socket.socket] = None
 
     def _load_sdp_record(self) -> str:
         """Load SDP service record XML from assets."""
@@ -660,17 +663,47 @@ class BTHIDService:
         bus = dbus.SystemBus()
 
         # --- HID Profile (keeps SDP record alive) ---
+        import os as _os, socket as _socket, syslog as _syslog
+
+        _ipc_fd = int(sys.argv[2]) if len(sys.argv) > 2 else -1
+
         class Profile(dbus.service.Object):
             IFACE = "org.bluez.Profile1"
+            _conn_idx = 0
+
             @dbus.service.method(IFACE, in_signature="", out_signature="")
             def Release(self):
                 loop.quit()
+
             @dbus.service.method(IFACE, in_signature="oha{sv}", out_signature="")
             def NewConnection(self, path, fd, properties):
-                pass  # L2CAP handled by plugin directly
+                # Take ownership of the fd so it is not auto-closed on return.
+                raw_fd = fd.take()
+                label = b"C" if Profile._conn_idx == 0 else b"I"
+                Profile._conn_idx = (Profile._conn_idx + 1) % 2
+                _syslog.syslog(
+                    f"deck-controller helper: NewConnection ch={label.decode()} "
+                    f"path={path} ipc_fd={_ipc_fd}"
+                )
+                if _ipc_fd >= 0:
+                    try:
+                        # Forward fd to main plugin via the socketpair.
+                        # fromfd() dups _ipc_fd so we close only the dup.
+                        ipc = _socket.fromfd(_ipc_fd, _socket.AF_UNIX, _socket.SOCK_STREAM)
+                        try:
+                            _socket.send_fds(ipc, [label], [raw_fd])
+                        finally:
+                            ipc.close()
+                    except Exception as exc:
+                        _syslog.syslog(f"deck-controller helper: IPC send failed: {exc}")
+                try:
+                    _os.close(raw_fd)
+                except OSError:
+                    pass
+
             @dbus.service.method(IFACE, in_signature="o", out_signature="")
             def RequestDisconnection(self, path):
-                pass
+                Profile._conn_idx = 0
 
         # --- Pairing Agent (NoInputNoOutput for PIN-less pairing) ---
         class Agent(dbus.service.Object):
@@ -776,17 +809,25 @@ class BTHIDService:
                 service_record = f.read()
 
         try:
+            # Create a STREAM socket pair so the helper can send connection
+            # fds back to us via NewConnection → SCM_RIGHTS.
+            ipc_recv, ipc_send = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+            self._ipc_recv = ipc_recv
+
             cmd = ["/usr/bin/python3", "-c", self._PROFILE_HELPER_SCRIPT]
             if service_record:
                 cmd.append(service_record)
+            cmd.append(str(ipc_send.fileno()))
 
             self._sdp_proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL,
+                pass_fds=(ipc_send.fileno(),),
                 env={k: v for k, v in os.environ.items() if not k.startswith(("LD_", "_PYI"))},
             )
+            ipc_send.close()  # Main process doesn't need the send end
 
             # Wait for the helper to print REGISTERED (up to 5s)
             import selectors
@@ -811,9 +852,15 @@ class BTHIDService:
                 stderr = (stderr_pipe.read() if stderr_pipe is not None else b"").decode().strip()
             logger.warning("SDP helper failed: %s", stderr or "timeout")
             self._kill_sdp_helper()
+            if self._ipc_recv is not None:
+                self._ipc_recv.close()
+                self._ipc_recv = None
             return False
         except (subprocess.SubprocessError, OSError) as e:
             logger.warning("Failed to start SDP helper: %s", e)
+            if self._ipc_recv is not None:
+                self._ipc_recv.close()
+                self._ipc_recv = None
             return False
 
     def _kill_sdp_helper(self) -> None:
@@ -871,6 +918,13 @@ class BTHIDService:
                 except OSError:
                     pass
                 setattr(self, attr, None)
+
+        if self._ipc_recv is not None:
+            try:
+                self._ipc_recv.close()
+            except OSError:
+                pass
+            self._ipc_recv = None
 
     async def start(
         self, controller_name: str = "Deck Controller", device_class: str = "0x002508"
@@ -955,6 +1009,45 @@ class BTHIDService:
 
         logger.info("BT HID service stopped")
 
+    async def _ipc_recv_fd(self, expected_label: bytes) -> int:
+        """Receive a single fd from the BlueZ profile helper via IPC socketpair.
+
+        The helper's NewConnection sends b"C" for control and b"I" for interrupt
+        channels, each paired with the corresponding fd via SCM_RIGHTS.  We
+        discard mismatched labels so ordering glitches are handled gracefully.
+
+        Args:
+            expected_label: b"C" or b"I" to wait for.
+
+        Returns:
+            The received file descriptor integer.
+        """
+        loop = asyncio.get_event_loop()
+        ipc = self._ipc_recv
+        if ipc is None:
+            raise RuntimeError("IPC socket not available")
+
+        while True:
+            # recv_fds is blocking — run it in the default thread pool.
+            label_data, fds, _flags, _addr = await loop.run_in_executor(
+                None, lambda: socket.recv_fds(ipc, 8, 1)
+            )
+            if not fds:
+                continue
+            fd = fds[0]
+            label = label_data[:1] if label_data else b""
+            if label == expected_label:
+                logger.info("IPC: received %s fd=%d", label.decode(), fd)
+                return fd
+            # Wrong label — close and keep waiting
+            logger.warning(
+                "IPC: unexpected label %r, expected %r — discarding fd", label, expected_label
+            )
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
     async def _accept_connections(self) -> None:
         """Wait for HID host to connect, or reconnect to a paired host.
 
@@ -973,25 +1066,85 @@ class BTHIDService:
                 connected = False
 
                 # --- Phase 1: Try accepting incoming connections (preferred) ---
-                if self._control_fd is not None:
+                if self._control_fd is not None or self._ipc_recv is not None:
                     try:
                         logger.info("Waiting for host to connect L2CAP (15s)...")
-                        client_fd, ctrl_addr = await asyncio.wait_for(
-                            _l2cap_async_accept(self._control_fd), timeout=15.0
-                        )
-                        self._control_client_fd = client_fd
-                        logger.info("Control channel accepted from %s", ctrl_addr)
 
-                        client_fd, intr_addr = await asyncio.wait_for(
-                            _l2cap_async_accept(self._interrupt_fd or 0), timeout=10.0
-                        )
-                        self._interrupt_client_fd = client_fd
-                        logger.info("Interrupt channel accepted from %s", intr_addr)
+                        # Run raw-socket accept and IPC fd-receive concurrently.
+                        # BlueZ 5.7x may route incoming L2CAP through NewConnection
+                        # (IPC path) instead of our bound raw socket.
+                        raw_task: Optional[asyncio.Task[tuple[int, str]]] = None
+                        ipc_ctrl_task: Optional[asyncio.Task[int]] = None
 
-                        device_name = self._get_device_name(ctrl_addr)
-                        self._connected_device = ConnectionInfo(address=ctrl_addr, name=device_name)
-                        logger.info("Device connected (incoming): %s (%s)", device_name, ctrl_addr)
-                        connected = True
+                        if self._control_fd is not None:
+                            raw_task = asyncio.ensure_future(_l2cap_async_accept(self._control_fd))
+                        if self._ipc_recv is not None:
+                            ipc_ctrl_task = asyncio.ensure_future(self._ipc_recv_fd(b"C"))
+
+                        tasks: list[asyncio.Task[Any]] = [
+                            t for t in (raw_task, ipc_ctrl_task) if t is not None
+                        ]
+                        done, pending = await asyncio.wait_for(
+                            asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED),
+                            timeout=15.0,
+                        )
+
+                        for task in pending:
+                            task.cancel()
+                            try:
+                                await task
+                            except (asyncio.CancelledError, Exception):
+                                pass
+
+                        # Determine which path succeeded
+                        ctrl_addr = "unknown"
+                        if raw_task is not None and raw_task in done and not raw_task.cancelled():
+                            exc = raw_task.exception()
+                            if exc is None:
+                                self._control_client_fd, ctrl_addr = raw_task.result()
+                                logger.info(
+                                    "Control channel accepted (raw socket) from %s", ctrl_addr
+                                )
+                                # Also accept interrupt via raw socket
+                                intr_fd, intr_addr = await asyncio.wait_for(
+                                    _l2cap_async_accept(self._interrupt_fd or 0), timeout=10.0
+                                )
+                                self._interrupt_client_fd = intr_fd
+                                logger.info("Interrupt channel accepted from %s", intr_addr)
+                                device_name = self._get_device_name(ctrl_addr)
+                                self._connected_device = ConnectionInfo(
+                                    address=ctrl_addr, name=device_name
+                                )
+                                logger.info(
+                                    "Device connected (raw accept): %s (%s)",
+                                    device_name,
+                                    ctrl_addr,
+                                )
+                                connected = True
+
+                        elif (
+                            ipc_ctrl_task is not None
+                            and ipc_ctrl_task in done
+                            and not ipc_ctrl_task.cancelled()
+                            and ipc_ctrl_task.exception() is None
+                        ):
+                            # Control fd came via BlueZ NewConnection
+                            ctrl_fd = ipc_ctrl_task.result()
+                            self._control_client_fd = ctrl_fd
+                            logger.info("Control channel received from BlueZ NewConnection")
+                            # Wait for interrupt fd via IPC
+                            intr_fd = await asyncio.wait_for(self._ipc_recv_fd(b"I"), timeout=10.0)
+                            self._interrupt_client_fd = intr_fd
+                            logger.info("Interrupt channel received from BlueZ NewConnection")
+                            # Restore blocking mode for sender
+                            _l2cap_set_blocking(self._interrupt_client_fd)
+                            device_name = "Android"
+                            self._connected_device = ConnectionInfo(
+                                address=ctrl_addr, name=device_name
+                            )
+                            logger.info("Device connected (BlueZ NewConnection): %s", device_name)
+                            connected = True
+
                     except asyncio.TimeoutError:
                         logger.info("Accept timeout (15s) — no incoming L2CAP from host")
 
@@ -1048,15 +1201,15 @@ class BTHIDService:
                 while self._running and self._interrupt_client_fd is not None:
                     await asyncio.sleep(0.5)
 
-                for task_attr in ("_ctrl_reader_task", "_auto_ready_task"):
-                    task = getattr(self, task_attr, None)
-                    if task is not None:
-                        task.cancel()
+                for cleanup_task in ("_ctrl_reader_task", "_auto_ready_task"):
+                    task2: Optional[asyncio.Task[Any]] = getattr(self, cleanup_task, None)
+                    if task2 is not None:
+                        task2.cancel()
                         try:
-                            await task
+                            await task2
                         except asyncio.CancelledError:
                             pass
-                        setattr(self, task_attr, None)
+                        setattr(self, cleanup_task, None)
 
                 self._stop_sender_thread()
                 self._protocol_ready = False

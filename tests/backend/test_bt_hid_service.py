@@ -376,22 +376,34 @@ class TestRegisterSdpRecord:
         mock_proc.pid = 1234
         mock_sel = MagicMock()
         mock_sel.select.return_value = [(MagicMock(), 1)]
+        mock_sock_a = MagicMock()
+        mock_sock_b = MagicMock()
+        mock_sock_b.fileno.return_value = 99
 
         with patch("backend.bt_hid_service.subprocess.run"), \
              patch("backend.bt_hid_service.subprocess.Popen", return_value=mock_proc), \
-             patch("selectors.DefaultSelector", return_value=mock_sel):
+             patch("selectors.DefaultSelector", return_value=mock_sel), \
+             patch("backend.bt_hid_service.socket.socketpair", return_value=(mock_sock_a, mock_sock_b)):
             assert svc._register_sdp_record() is True
 
     @patch("backend.bt_hid_service.os.path.isfile", return_value=False)
     def test_missing_file(self, mock_isfile):
         svc = BTHIDService()
-        with patch("backend.bt_hid_service.subprocess.run"):
+        mock_sock_a = MagicMock()
+        mock_sock_b = MagicMock()
+        mock_sock_b.fileno.return_value = 99
+        with patch("backend.bt_hid_service.subprocess.run"), \
+             patch("backend.bt_hid_service.socket.socketpair", return_value=(mock_sock_a, mock_sock_b)):
             assert svc._register_sdp_record() is False
 
     @patch("backend.bt_hid_service.os.path.isfile", return_value=True)
     def test_oserror(self, mock_isfile):
         svc = BTHIDService()
+        mock_sock_a = MagicMock()
+        mock_sock_b = MagicMock()
+        mock_sock_b.fileno.return_value = 99
         with patch("backend.bt_hid_service.subprocess.run"), \
+             patch("backend.bt_hid_service.socket.socketpair", return_value=(mock_sock_a, mock_sock_b)), \
              patch("backend.bt_hid_service.subprocess.Popen", side_effect=OSError("no python")):
             assert svc._register_sdp_record() is False
 
