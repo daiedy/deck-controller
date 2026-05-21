@@ -870,7 +870,7 @@ class InputReader:
                 evdev_buf = b""
                 try:
                     while not stop_local.is_set():
-                        ready, _, _ = select.select([fd_local], [], [], 0.05)
+                        ready, _, _ = select.select([fd_local], [], [], 0.004)
                         if not ready:
                             continue
                         try:

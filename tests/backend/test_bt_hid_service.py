@@ -163,30 +163,32 @@ class TestSendMouseReport:
         # Two direct writes
         assert mock_write.call_count == 2
 
-    def test_fallback_to_accumulation_on_blocking(self):
-        """When os.write raises BlockingIOError, deltas accumulate."""
+    def test_burst_sends_multiple_on_large_delta(self):
+        """When delta exceeds ±127, multiple reports are sent in burst."""
+        svc = BTHIDService()
+        svc._interrupt_client_fd = 42
+        svc._protocol_ready = True
+
+        with patch("backend.bt_hid_service.os.write") as mock_write:
+            mock_write.return_value = 6
+            # dx=200 needs 2 reports: 127 + 73
+            svc.send_mouse_report(0, 200, 0, 0)
+
+        assert mock_write.call_count == 2
+
+    def test_drops_on_blocking(self):
+        """When os.write raises BlockingIOError, remainder is dropped (no accumulation)."""
         svc = BTHIDService()
         svc._interrupt_client_fd = 42
         svc._protocol_ready = True
 
         with patch("backend.bt_hid_service.os.write", side_effect=BlockingIOError):
-            svc.send_mouse_report(0, 10, 5, 0)
-            svc.send_mouse_report(0, 15, -3, 1)
+            result = svc.send_mouse_report(0, 10, 5, 0)
 
-        assert svc._pending_mouse == [0, 25, 2, 1]
-        assert svc._pending_event.is_set()
-
-    def test_ors_buttons_on_blocking(self):
-        """Button bits are OR'd when falling back to accumulation."""
-        svc = BTHIDService()
-        svc._interrupt_client_fd = 42
-        svc._protocol_ready = True
-
-        with patch("backend.bt_hid_service.os.write", side_effect=BlockingIOError):
-            svc.send_mouse_report(0x01, 0, 0, 0)  # left
-            svc.send_mouse_report(0x04, 0, 0, 0)  # middle
-
-        assert svc._pending_mouse[0] == 0x05
+        assert result is True
+        # No accumulation — data is dropped on buffer full
+        assert svc._pending_mouse == [0, 0, 0, 0]
+        assert not svc._pending_event.is_set()
 
     def test_sender_thread_writes_accumulated(self):
         """Sender thread drains accumulated mouse deltas."""

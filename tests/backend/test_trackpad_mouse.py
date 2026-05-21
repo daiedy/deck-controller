@@ -29,14 +29,15 @@ class TestUpdateRight:
     def test_movement_after_first_touch(self):
         t = TrackpadMouse()
         t.update_right(1000, 1000, True)  # first touch
-        dx, dy = t.update_right(1256, 1000, True)  # move right by 256
-        assert dx == 1  # 256 * 1.0 / 256 = 1
+        dx, dy = t.update_right(1128, 1000, True)  # move right by 128
+        # 128 * 1.0 / 128 = 1.0 (below accel threshold, no boost)
+        assert dx == 1
         assert dy == 0
 
     def test_negative_movement(self):
         t = TrackpadMouse()
         t.update_right(1000, 1000, True)
-        dx, dy = t.update_right(744, 1000, True)  # move left by 256
+        dx, dy = t.update_right(872, 1000, True)  # move left by 128
         assert dx == -1
         assert dy == 0
 
@@ -65,8 +66,8 @@ class TestUpdateRight:
     def test_sensitivity_scaling(self):
         t = TrackpadMouse(sensitivity=2.0)
         t.update_right(1000, 1000, True)
-        dx, dy = t.update_right(1256, 1000, True)  # 256 delta
-        assert dx == 2  # 256 * 2.0 / 256 = 2
+        dx, dy = t.update_right(1128, 1000, True)  # 128 delta
+        assert dx == 2  # 128 * 2.0 / 128 = 2
 
     def test_zero_sensitivity(self):
         t = TrackpadMouse(sensitivity=0.0)
@@ -76,19 +77,19 @@ class TestUpdateRight:
         assert dy == 0
 
     def test_subpixel_accumulation(self):
-        # 128 raw units = 0.5 px at sensitivity=1.0; two moves = 1 px total
+        # 64 raw units = 0.5 px at sensitivity=1.0 with BASE_SCALE=1/128; two moves = 1 px total
         t = TrackpadMouse()
         t.update_right(0, 0, True)
-        dx, _ = t.update_right(128, 0, True)   # 0.5 → truncated to 0
+        dx, _ = t.update_right(64, 0, True)   # 0.5 → truncated to 0
         assert dx == 0
-        dx, _ = t.update_right(256, 0, True)   # accumulated 0.5+0.5 = 1.0 → 1
+        dx, _ = t.update_right(128, 0, True)   # accumulated 0.5+0.5 = 1.0 → 1
         assert dx == 1
 
     def test_y_axis_inverted(self):
         # Moving finger up (positive raw_dy) should move cursor up (negative HID dy)
         t = TrackpadMouse()
         t.update_right(0, 0, True)
-        _, dy = t.update_right(0, 256, True)  # finger moves up 256 units
+        _, dy = t.update_right(0, 128, True)  # finger moves up 128 units
         assert dy == -1  # cursor moves up
 
 

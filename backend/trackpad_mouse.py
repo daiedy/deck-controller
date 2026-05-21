@@ -2,7 +2,34 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
+
+# Acceleration curve parameters
+_ACCEL_THRESHOLD = 3.0  # Below this speed: 1:1 (precise aiming)
+_ACCEL_MULTIPLIER = 1.8  # Speed boost above threshold
+_ACCEL_CAP = 6.0  # Maximum multiplier cap
+
+# Base scaling: trackpad units → mouse units
+# Trackpad range ~±16384, at 250Hz a fast swipe produces ~2000 units/frame.
+# We want slow movement (< 200 units) to map precisely and fast movement
+# (> 500 units) to cover large screen distances.
+_BASE_SCALE = 1.0 / 128  # Increased from 1/256 — more responsive base
+
+
+def _apply_acceleration(raw: float) -> float:
+    """Apply mouse-style acceleration curve to a raw delta.
+
+    Below threshold: linear 1:1 mapping (precision).
+    Above threshold: power curve for faster large movements.
+    """
+    magnitude = abs(raw)
+    if magnitude < _ACCEL_THRESHOLD:
+        return raw
+    # Smooth acceleration above threshold
+    accel = 1.0 + (_ACCEL_MULTIPLIER - 1.0) * math.log1p(magnitude - _ACCEL_THRESHOLD)
+    accel = min(accel, _ACCEL_CAP)
+    return raw * accel
 
 
 @dataclass
@@ -12,6 +39,9 @@ class TrackpadMouse:
     Steam Deck trackpads report absolute positions as signed int16 with Y
     increasing upward (hardware up = +Y, same convention as the sticks).
     This class tracks previous positions and calculates deltas.
+
+    Uses a mouse-style acceleration curve: slow movements are precise,
+    fast movements cover large distances.
     """
 
     sensitivity: float = 1.0
@@ -60,11 +90,18 @@ class TrackpadMouse:
         self._prev_right_x = x
         self._prev_right_y = y
 
-        # Scale: trackpad range ~-16384..16384, mouse delta -127..127
-        # Accumulate sub-pixel fractions to avoid small movements being lost to truncation.
+        # Scale to mouse units and apply acceleration
         # Y is negated: hardware Y increases upward, HID mouse Y increases downward.
-        self._accum_x += raw_dx * self.sensitivity / 256
-        self._accum_y += -raw_dy * self.sensitivity / 256
+        scaled_dx = raw_dx * self.sensitivity * _BASE_SCALE
+        scaled_dy = -raw_dy * self.sensitivity * _BASE_SCALE
+
+        # Apply acceleration curve (makes slow movements precise, fast movements big)
+        accel_dx = _apply_acceleration(scaled_dx)
+        accel_dy = _apply_acceleration(scaled_dy)
+
+        # Accumulate sub-pixel fractions
+        self._accum_x += accel_dx
+        self._accum_y += accel_dy
 
         dx = int(self._accum_x)
         dy = int(self._accum_y)

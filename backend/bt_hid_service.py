@@ -1877,14 +1877,14 @@ class BTHIDService:
         return True
 
     def send_mouse_report(self, buttons: int, dx: int, dy: int, wheel: int) -> bool:
-        """Send mouse report with minimal latency (direct-write path).
+        """Send mouse report with minimal latency (direct-write burst path).
 
-        Attempts to write the HID mouse report directly from the calling thread
-        (the input reader thread) without going through the sender thread.
-        This eliminates ~0.5-2ms of lock/event/context-switch overhead.
+        Writes HID mouse reports directly from the calling thread.  If the
+        delta exceeds ±127 (fast swipe), sends multiple back-to-back reports
+        immediately rather than deferring remainder to the sender thread.
 
-        If the direct write would block (BT buffer full), the deltas are
-        accumulated in the pending state for the sender thread to drain.
+        If the direct write would block (BT buffer full), drops the remaining
+        data for this frame (latest-position-wins — next frame will be fresh).
 
         Args:
             buttons: 3-bit button bitmask (bit 0=left, 1=right, 2=middle).
@@ -1901,51 +1901,39 @@ class BTHIDService:
         if not self._protocol_ready:
             return False
 
-        clamped_dx = max(-127, min(127, dx))
-        clamped_dy = max(-127, min(127, dy))
-        clamped_wheel = max(-127, min(127, wheel))
-        report = struct.pack(
-            "<BBbbb",
-            0x02,
-            buttons & 0x07,
-            clamped_dx,
-            clamped_dy,
-            clamped_wheel,
-        )
-        payload = b"\xa1" + report
+        btn = buttons & 0x07
+        rem_dx = dx
+        rem_dy = dy
+        rem_wheel = wheel
 
-        # Try non-blocking direct write from caller's thread
+        # Burst: send multiple ±127 reports until delta is consumed
         try:
-            os.write(fd, payload)
-            self._report_count += 1
-            if self._report_count <= 5 or self._report_count % 500 == 0:
-                logger.info(
-                    "HID report #%d (mouse direct) (%d bytes): %s",
-                    self._report_count,
-                    len(payload),
-                    payload[:10].hex(),
-                )
-            # Handle remainder if deltas exceeded ±127
-            rem_dx = dx - clamped_dx
-            rem_dy = dy - clamped_dy
-            rem_wheel = wheel - clamped_wheel
-            if rem_dx or rem_dy or rem_wheel:
-                with self._pending_lock:
-                    self._pending_mouse[1] += rem_dx
-                    self._pending_mouse[2] += rem_dy
-                    self._pending_mouse[3] += rem_wheel
-                self._pending_event.set()
-            return True
-        except BlockingIOError:
-            # Socket buffer full — fall back to accumulation
-            with self._pending_lock:
-                self._pending_mouse[0] |= buttons
-                self._pending_mouse[1] += dx
-                self._pending_mouse[2] += dy
-                self._pending_mouse[3] += wheel
-            self._pending_event.set()
+            while rem_dx or rem_dy or rem_wheel:
+                clamped_dx = max(-127, min(127, rem_dx))
+                clamped_dy = max(-127, min(127, rem_dy))
+                clamped_wheel = max(-127, min(127, rem_wheel))
+                report = struct.pack("<BBbbb", 0x02, btn, clamped_dx, clamped_dy, clamped_wheel)
+                payload = b"\xa1" + report
+                try:
+                    os.write(fd, payload)
+                except BlockingIOError:
+                    # Buffer full — drop remainder (next frame brings fresh data)
+                    break
+                rem_dx -= clamped_dx
+                rem_dy -= clamped_dy
+                rem_wheel -= clamped_wheel
+                self._report_count += 1
+                if self._report_count <= 5 or self._report_count % 500 == 0:
+                    logger.info(
+                        "HID report #%d (mouse burst) (%d bytes): %s",
+                        self._report_count,
+                        len(payload),
+                        payload[:10].hex(),
+                    )
             return True
         except OSError as e:
+            if e.errno == 11:  # EAGAIN
+                return True
             logger.error("Mouse direct write failed: %s", e)
             self._handle_disconnect()
             return False
