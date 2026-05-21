@@ -38,6 +38,15 @@ AF_BLUETOOTH = 31
 BTPROTO_L2CAP = 0
 SOCK_SEQPACKET = 5
 
+# Bluetooth socket options for low-latency HID
+SOL_BLUETOOTH = 274
+BT_POWER = 9
+BT_POWER_FORCE_ACTIVE_OFF = 0
+BT_POWER_FORCE_ACTIVE_ON = 1
+SO_PRIORITY = 12
+L2CAP_OPTIONS = 0x01
+SOL_L2CAP = 6
+
 # --- ctypes L2CAP helpers ---------------------------------------------------
 # DeckyLoader bundles Python 3.11 via PyInstaller, compiled WITHOUT Bluetooth
 # socket support. socket.socket(AF_BLUETOOTH) creates the fd OK (kernel call),
@@ -1139,8 +1148,8 @@ class BTHIDService:
                             intr_fd = await asyncio.wait_for(self._ipc_recv_fd(b"I"), timeout=10.0)
                             self._interrupt_client_fd = intr_fd
                             logger.info("Interrupt channel received from BlueZ NewConnection")
-                            # Restore blocking mode for sender
-                            _l2cap_set_blocking(self._interrupt_client_fd)
+                            # Non-blocking mode for direct-write mouse path
+                            _l2cap_set_nonblock(self._interrupt_client_fd)
                             device_name = "Android"
                             self._connected_device = ConnectionInfo(
                                 address=ctrl_addr, name=device_name
@@ -1180,6 +1189,7 @@ class BTHIDService:
 
                 # --- Connected: verify socket health ---
                 self._log_connection_diagnostics()
+                self._optimize_socket_latency()
 
                 self._report_count = 0
                 self._protocol_ready = False
@@ -1312,6 +1322,79 @@ class BTHIDService:
                     logger.info("DIAG getpeername failed: %s", os.strerror(ctypes.get_errno()))
         except Exception as e:
             logger.warning("DIAG connection check error: %s", e)
+
+    def _optimize_socket_latency(self) -> None:
+        """Apply low-latency socket options to connected L2CAP channels.
+
+        1. BT_POWER force_active — prevents sniff mode, keeping the link in
+           active mode so packets are sent immediately without waiting for
+           the next sniff window (saves 10-100ms per packet).
+        2. SO_PRIORITY 6 — maps to TC_PRIO_INTERACTIVE in the kernel, giving
+           BT HID packets scheduling priority over bulk traffic.
+        3. L2CAP flush timeout — tells the controller to discard stale packets
+           rather than retransmitting them (reduces head-of-line blocking).
+        """
+        for name, fd in [("ctrl", self._control_client_fd), ("intr", self._interrupt_client_fd)]:
+            if fd is None:
+                continue
+
+            # Force active power mode (disable sniff)
+            try:
+                val = ctypes.c_uint8(BT_POWER_FORCE_ACTIVE_ON)
+                ret = _libc.setsockopt(
+                    fd, SOL_BLUETOOTH, BT_POWER, ctypes.byref(val), ctypes.sizeof(val)
+                )
+                if ret == 0:
+                    logger.info("LOW-LAT %s: BT_POWER force_active set", name)
+                else:
+                    logger.warning(
+                        "LOW-LAT %s: BT_POWER failed: %s", name, os.strerror(ctypes.get_errno())
+                    )
+            except Exception as e:
+                logger.warning("LOW-LAT %s: BT_POWER error: %s", name, e)
+
+            # Set socket priority to interactive
+            try:
+                prio = ctypes.c_int(6)  # TC_PRIO_INTERACTIVE
+                ret = _libc.setsockopt(
+                    fd, socket.SOL_SOCKET, SO_PRIORITY, ctypes.byref(prio), ctypes.sizeof(prio)
+                )
+                if ret == 0:
+                    logger.info("LOW-LAT %s: SO_PRIORITY=6 set", name)
+                else:
+                    logger.warning(
+                        "LOW-LAT %s: SO_PRIORITY failed: %s", name, os.strerror(ctypes.get_errno())
+                    )
+            except Exception as e:
+                logger.warning("LOW-LAT %s: SO_PRIORITY error: %s", name, e)
+
+        # Set L2CAP flush timeout on interrupt channel (HID data)
+        intr_fd = self._interrupt_client_fd
+        if intr_fd is not None:
+            try:
+                # struct l2cap_options { uint16_t omtu, imtu, flush_to, mode, fcs, ... }
+                # We only need to set flush_to (offset 4, 2 bytes).
+                # Read current options first
+                opts = ctypes.create_string_buffer(32)
+                optlen = ctypes.c_int(32)
+                ret = _libc.getsockopt(
+                    intr_fd, SOL_L2CAP, L2CAP_OPTIONS, opts, ctypes.byref(optlen)
+                )
+                if ret == 0 and optlen.value >= 6:
+                    # Set flush_to to minimum (1 = 0.625ms baseband slots)
+                    struct.pack_into("<H", opts, 4, 1)
+                    ret = _libc.setsockopt(intr_fd, SOL_L2CAP, L2CAP_OPTIONS, opts, optlen.value)
+                    if ret == 0:
+                        logger.info("LOW-LAT intr: L2CAP flush_timeout=1 slot")
+                    else:
+                        logger.warning(
+                            "LOW-LAT intr: flush_to setsockopt failed: %s",
+                            os.strerror(ctypes.get_errno()),
+                        )
+                else:
+                    logger.warning("LOW-LAT intr: getsockopt L2CAP_OPTIONS failed")
+            except Exception as e:
+                logger.warning("LOW-LAT intr: flush_timeout error: %s", e)
 
     def _close_client_fds(self) -> None:
         """Close client connection fds only (keep server sockets)."""
@@ -1484,9 +1567,8 @@ class BTHIDService:
             self._interrupt_client_fd = await _l2cap_async_connect(bdaddr, PSM_INTERRUPT)
             logger.info("Interrupt channel connected")
 
-            # Restore blocking mode — async_connect sets O_NONBLOCK for
-            # select()-based connect, but send_report() uses blocking os.write()
-            _l2cap_set_blocking(self._interrupt_client_fd)
+            # Non-blocking mode for direct-write mouse path
+            _l2cap_set_nonblock(self._interrupt_client_fd)
 
             return True
         except (OSError, asyncio.TimeoutError) as e:
@@ -1692,11 +1774,21 @@ class BTHIDService:
     def _write_hid_report(self, fd: int, report: bytes) -> bool:
         """Write a single HID report to the interrupt channel.
 
-        Returns True on success, False on error (caller should break).
+        Handles non-blocking mode: retries with short select() on EAGAIN.
+        Returns True on success, False on fatal error (caller should break).
         """
         try:
             payload = b"\xa1" + report
-            os.write(fd, payload)
+            try:
+                os.write(fd, payload)
+            except BlockingIOError:
+                # Socket buffer full — wait up to 10ms for space
+                _, writable, _ = _select_mod.select([], [fd], [], 0.010)
+                if writable:
+                    os.write(fd, payload)
+                else:
+                    # Still full — drop this report (gamepad is latest-wins anyway)
+                    return True
             self._report_count += 1
             if self._report_count <= 5 or self._report_count % 500 == 0:
                 logger.info(
@@ -1707,6 +1799,8 @@ class BTHIDService:
                 )
             return True
         except OSError as e:
+            if e.errno == 11:  # EAGAIN — shouldn't happen after select, but be safe
+                return True
             logger.error("Failed to send HID report: %s", e)
             self._handle_disconnect()
             return False
@@ -1736,12 +1830,14 @@ class BTHIDService:
         return True
 
     def send_mouse_report(self, buttons: int, dx: int, dy: int, wheel: int) -> bool:
-        """Accumulate mouse deltas for sending (no data is ever dropped).
+        """Send mouse report with minimal latency (direct-write path).
 
-        Unlike send_report() which uses latest-wins, mouse reports contain
-        relative deltas that must ALL be transmitted.  Deltas are summed into
-        an accumulator; the sender thread drains the accumulated values and
-        packs a single HID mouse report per cycle.
+        Attempts to write the HID mouse report directly from the calling thread
+        (the input reader thread) without going through the sender thread.
+        This eliminates ~0.5-2ms of lock/event/context-switch overhead.
+
+        If the direct write would block (BT buffer full), the deltas are
+        accumulated in the pending state for the sender thread to drain.
 
         Args:
             buttons: 3-bit button bitmask (bit 0=left, 1=right, 2=middle).
@@ -1752,18 +1848,60 @@ class BTHIDService:
         Returns:
             True if accepted.
         """
-        if self._interrupt_client_fd is None:
+        fd = self._interrupt_client_fd
+        if fd is None:
             return False
         if not self._protocol_ready:
             return False
 
-        with self._pending_lock:
-            self._pending_mouse[0] |= buttons
-            self._pending_mouse[1] += dx
-            self._pending_mouse[2] += dy
-            self._pending_mouse[3] += wheel
-        self._pending_event.set()
-        return True
+        clamped_dx = max(-127, min(127, dx))
+        clamped_dy = max(-127, min(127, dy))
+        clamped_wheel = max(-127, min(127, wheel))
+        report = struct.pack(
+            "<BBbbb",
+            0x02,
+            buttons & 0x07,
+            clamped_dx,
+            clamped_dy,
+            clamped_wheel,
+        )
+        payload = b"\xa1" + report
+
+        # Try non-blocking direct write from caller's thread
+        try:
+            os.write(fd, payload)
+            self._report_count += 1
+            if self._report_count <= 5 or self._report_count % 500 == 0:
+                logger.info(
+                    "HID report #%d (mouse direct) (%d bytes): %s",
+                    self._report_count,
+                    len(payload),
+                    payload[:10].hex(),
+                )
+            # Handle remainder if deltas exceeded ±127
+            rem_dx = dx - clamped_dx
+            rem_dy = dy - clamped_dy
+            rem_wheel = wheel - clamped_wheel
+            if rem_dx or rem_dy or rem_wheel:
+                with self._pending_lock:
+                    self._pending_mouse[1] += rem_dx
+                    self._pending_mouse[2] += rem_dy
+                    self._pending_mouse[3] += rem_wheel
+                self._pending_event.set()
+            return True
+        except BlockingIOError:
+            # Socket buffer full — fall back to accumulation
+            with self._pending_lock:
+                self._pending_mouse[0] |= buttons
+                self._pending_mouse[1] += dx
+                self._pending_mouse[2] += dy
+                self._pending_mouse[3] += wheel
+            self._pending_event.set()
+            return True
+        except OSError as e:
+            logger.error("Mouse direct write failed: %s", e)
+            self._handle_disconnect()
+            return False
 
     def _handle_disconnect(self) -> None:
         """Handle device disconnection."""

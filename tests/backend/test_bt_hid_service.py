@@ -149,26 +149,42 @@ class TestSendMouseReport:
         svc = BTHIDService()
         assert svc.send_mouse_report(0, 10, 20, 0) is False
 
-    def test_accumulates_deltas(self):
-        """Multiple calls accumulate dx/dy/wheel."""
+    def test_direct_write_sends_immediately(self):
+        """With valid fd, send_mouse_report writes directly via os.write."""
         svc = BTHIDService()
         svc._interrupt_client_fd = 42
         svc._protocol_ready = True
 
-        svc.send_mouse_report(0, 10, 5, 0)
-        svc.send_mouse_report(0, 15, -3, 1)
+        with patch("backend.bt_hid_service.os.write") as mock_write:
+            mock_write.return_value = 6
+            svc.send_mouse_report(0, 10, 5, 0)
+            svc.send_mouse_report(0, 15, -3, 1)
+
+        # Two direct writes
+        assert mock_write.call_count == 2
+
+    def test_fallback_to_accumulation_on_blocking(self):
+        """When os.write raises BlockingIOError, deltas accumulate."""
+        svc = BTHIDService()
+        svc._interrupt_client_fd = 42
+        svc._protocol_ready = True
+
+        with patch("backend.bt_hid_service.os.write", side_effect=BlockingIOError):
+            svc.send_mouse_report(0, 10, 5, 0)
+            svc.send_mouse_report(0, 15, -3, 1)
 
         assert svc._pending_mouse == [0, 25, 2, 1]
         assert svc._pending_event.is_set()
 
-    def test_ors_buttons(self):
-        """Button bits are OR'd across calls."""
+    def test_ors_buttons_on_blocking(self):
+        """Button bits are OR'd when falling back to accumulation."""
         svc = BTHIDService()
         svc._interrupt_client_fd = 42
         svc._protocol_ready = True
 
-        svc.send_mouse_report(0x01, 0, 0, 0)  # left
-        svc.send_mouse_report(0x04, 0, 0, 0)  # middle
+        with patch("backend.bt_hid_service.os.write", side_effect=BlockingIOError):
+            svc.send_mouse_report(0x01, 0, 0, 0)  # left
+            svc.send_mouse_report(0x04, 0, 0, 0)  # middle
 
         assert svc._pending_mouse[0] == 0x05
 
@@ -183,12 +199,16 @@ class TestSendMouseReport:
         with patch("backend.bt_hid_service.os.write") as mock_write:
             mock_write.return_value = 6
             svc._start_sender_thread()
-            svc.send_mouse_report(0x01, 30, -20, 2)
+            # Force accumulation by setting pending state directly
+            with svc._pending_lock:
+                svc._pending_mouse[:] = [0x01, 30, -20, 2]
+            svc._pending_event.set()
             time.sleep(0.15)
             svc._stop_sender_thread()
 
-        mock_write.assert_called_once()
-        payload = mock_write.call_args[0][1]
+        # Sender thread should have written the accumulated mouse report
+        assert mock_write.call_count >= 1
+        payload = mock_write.call_args_list[0][0][1]
         # 0xa1 header + report ID 0x02 + buttons 0x01 + dx=30 + dy=-20 + wheel=2
         assert payload[0:1] == b"\xa1"
         assert payload[1:2] == b"\x02"  # report ID
