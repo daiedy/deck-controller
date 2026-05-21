@@ -1,4 +1,4 @@
-.PHONY: build clean deploy init lint verify test test-py test-ts format hooks-install hooks-run watch watch-backend watch-frontend deck-logs deck-errors
+.PHONY: build clean deploy init lint verify test test-py test-ts format hooks-install hooks-run watch watch-backend watch-frontend deck-logs deck-errors deploy-deck deploy-deck-frontend
 
 PYTHON := .venv/bin/python
 PIP := .venv/bin/pip
@@ -67,6 +67,14 @@ watch-backend:
 watch-frontend:
 	@chmod +x scripts/live-reload.sh
 	@scripts/live-reload.sh --frontend-only
+
+deploy-deck:
+	@chmod +x scripts/live-reload.sh
+	@scripts/live-reload.sh --deploy-backend
+
+deploy-deck-frontend: build
+	@chmod +x scripts/live-reload.sh
+	@scripts/live-reload.sh --deploy-frontend
 
 deck-logs:
 	@set -a && [ -f .env.deck ] && . ./.env.deck; set +a; \

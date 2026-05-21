@@ -89,29 +89,54 @@ class TestSendReport:
         assert svc.send_report(b"\x01\x00") is False
 
     def test_sends_with_header(self):
+        """send_report enqueues the report and the sender thread writes it."""
+        svc = BTHIDService()
+        svc._interrupt_client_fd = 42
+        svc._protocol_ready = True
+
+        result = svc.send_report(b"\x01\x00\x00")
+
+        assert result is True
+        # Report is placed in the send queue for the sender thread
+        assert not svc._send_queue.empty()
+        assert svc._send_queue.get_nowait() == b"\x01\x00\x00"
+
+    def test_sender_thread_writes_with_header(self):
+        """Sender thread prepends 0xA1 header and calls os.write."""
+        import time
+
         svc = BTHIDService()
         svc._interrupt_client_fd = 42
         svc._protocol_ready = True
 
         with patch("backend.bt_hid_service.os.write") as mock_write:
             mock_write.return_value = 4
-            result = svc.send_report(b"\x01\x00\x00")
+            svc._start_sender_thread()
+            svc._send_queue.put_nowait(b"\x01\x00\x00")
+            time.sleep(0.15)  # let sender thread process
+            svc._stop_sender_thread()
 
-        assert result is True
         mock_write.assert_called_once_with(42, b"\xa1\x01\x00\x00")
 
     def test_oserror_disconnects(self):
+        """When os.write raises OSError, the sender thread calls _handle_disconnect."""
+        import time
+
         svc = BTHIDService()
         svc._interrupt_client_fd = 42
         svc._control_client_fd = 43
         svc._protocol_ready = True
         svc._connected_device = ConnectionInfo("AA:BB:CC:DD:EE:FF")
 
-        with patch("backend.bt_hid_service.os.write", side_effect=OSError("Connection lost")), \
+        with patch("backend.bt_hid_service.os.write", side_effect=OSError("conn lost")), \
              patch("backend.bt_hid_service.os.close"):
-            result = svc.send_report(b"\x01\x00")
+            svc._start_sender_thread()
+            svc._send_queue.put_nowait(b"\x01\x00")
+            time.sleep(0.2)  # let sender thread hit the error
+            svc._send_thread_stop.set()
+            if svc._send_thread:
+                svc._send_thread.join(timeout=1.0)
 
-        assert result is False
         assert svc._connected_device is None
         assert svc._interrupt_client_fd is None
 

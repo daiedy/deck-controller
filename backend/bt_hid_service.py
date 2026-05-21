@@ -9,11 +9,13 @@ import fcntl
 import logging
 import os
 import pty
+import queue
 import select as _select_mod
 import socket
 import struct
 import subprocess
 import textwrap
+import threading
 import time as _time_mod
 from typing import Any, Optional
 
@@ -239,6 +241,12 @@ class BTHIDService:
         self._clean_env = os.environ.copy()
         self._clean_env.pop("LD_LIBRARY_PATH", None)
         self._clean_env.pop("LD_LIBRARY_PATH_ORIG", None)
+        # Sender thread — moves blocking os.write() off the asyncio event loop.
+        # Bounded queue with "discard oldest" semantics prevents latency buildup
+        # when the BT host (e.g. Android) consumes reports slower than 250 Hz.
+        self._send_queue: queue.Queue[Optional[bytes]] = queue.Queue(maxsize=8)
+        self._send_thread: Optional[threading.Thread] = None
+        self._send_thread_stop: threading.Event = threading.Event()
 
     def _load_sdp_record(self) -> str:
         """Load SDP service record XML from assets."""
@@ -934,6 +942,7 @@ class BTHIDService:
                 pass
             self._accept_task = None
 
+        self._stop_sender_thread()
         self._close_sockets()
         self._kill_sdp_helper()
         self._connected_device = None
@@ -1019,6 +1028,11 @@ class BTHIDService:
                 self._report_count = 0
                 self._protocol_ready = False
 
+                # Start the dedicated sender thread — keeps blocking os.write()
+                # off the asyncio event loop so trackpad/mouse at 250 Hz never
+                # stalls event processing.
+                self._start_sender_thread()
+
                 self._ctrl_reader_task = asyncio.create_task(self._control_channel_reader())
 
                 # Auto-enable reports after 2s if host doesn't send SET_PROTOCOL
@@ -1044,6 +1058,7 @@ class BTHIDService:
                             pass
                         setattr(self, task_attr, None)
 
+                self._stop_sender_thread()
                 self._protocol_ready = False
                 logger.info("HID connection lost, waiting 3s before reconnect")
                 await asyncio.sleep(3)
@@ -1353,8 +1368,8 @@ class BTHIDService:
 
         _l2cap_set_nonblock(self._control_client_fd)
         loop = asyncio.get_event_loop()
-        queue: asyncio.Queue[bytes] = asyncio.Queue()
-        stop_event = __import__("threading").Event()
+        ctrl_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        stop_event = threading.Event()
         fd = self._control_client_fd
 
         def _reader_thread() -> None:
@@ -1362,24 +1377,22 @@ class BTHIDService:
                 try:
                     data = os.read(fd, 1024)
                     if data:
-                        loop.call_soon_threadsafe(queue.put_nowait, data)
+                        loop.call_soon_threadsafe(ctrl_queue.put_nowait, data)
                     else:
-                        loop.call_soon_threadsafe(queue.put_nowait, b"")
+                        loop.call_soon_threadsafe(ctrl_queue.put_nowait, b"")
                         break
                 except BlockingIOError:
                     stop_event.wait(0.01)
                 except OSError:
-                    loop.call_soon_threadsafe(queue.put_nowait, b"")
+                    loop.call_soon_threadsafe(ctrl_queue.put_nowait, b"")
                     break
-
-        import threading
 
         thread = threading.Thread(target=_reader_thread, daemon=True, name="ctrl-reader")
         thread.start()
         logger.info("Control channel reader started (threaded)")
         try:
             while self._running:
-                data = await queue.get()
+                data = await ctrl_queue.get()
                 if not data:
                     break
                 self._handle_control_message(data)
@@ -1432,14 +1445,90 @@ class BTHIDService:
             except OSError as e:
                 logger.error("Failed to send control response: %s", e)
 
+    # ------------------------------------------------------------------
+    # Sender thread — keeps blocking os.write() off the asyncio event loop
+    # ------------------------------------------------------------------
+
+    def _start_sender_thread(self) -> None:
+        """Start the background BT sender thread.
+
+        Drains any stale items from the queue before starting so we don't
+        send leftover reports from a previous connection.
+        """
+        self._send_thread_stop.clear()
+        # Drain stale items
+        while not self._send_queue.empty():
+            try:
+                self._send_queue.get_nowait()
+            except queue.Empty:
+                break
+        self._send_thread = threading.Thread(
+            target=self._sender_thread_func, daemon=True, name="bt-sender"
+        )
+        self._send_thread.start()
+        logger.info("BT sender thread started")
+
+    def _stop_sender_thread(self) -> None:
+        """Signal the sender thread to stop and wait for it to exit.
+
+        Must NOT be called from within the sender thread itself.
+        """
+        self._send_thread_stop.set()
+        # Unblock get() if thread is waiting
+        try:
+            self._send_queue.put_nowait(None)  # sentinel
+        except queue.Full:
+            pass
+        if self._send_thread is not None:
+            self._send_thread.join(timeout=2.0)
+            self._send_thread = None
+
+    def _sender_thread_func(self) -> None:
+        """Sender thread: dequeue reports and write to the interrupt channel.
+
+        Runs until stop is requested or a write error occurs.
+        Uses blocking os.write() safely in its own thread so the asyncio
+        event loop is never stalled by a slow BT host.
+        """
+        while not self._send_thread_stop.is_set():
+            try:
+                report = self._send_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if report is None:  # sentinel — stop requested
+                break
+            fd = self._interrupt_client_fd
+            if fd is None:
+                continue
+            try:
+                payload = b"\xa1" + report
+                os.write(fd, payload)
+                self._report_count += 1
+                if self._report_count <= 5 or self._report_count % 500 == 0:
+                    logger.info(
+                        "HID report #%d (%d bytes): %s",
+                        self._report_count,
+                        len(payload),
+                        payload[:10].hex(),
+                    )
+            except OSError as e:
+                logger.error("Failed to send HID report: %s", e)
+                self._handle_disconnect()
+                break
+
     def send_report(self, report: bytes) -> bool:
-        """Send an HID report on the interrupt channel.
+        """Enqueue an HID report for sending on the interrupt channel.
+
+        Non-blocking: if the send queue is full the oldest pending report is
+        discarded and replaced by this one.  This prevents latency from
+        accumulating when the BT host consumes reports slower than they are
+        produced (e.g. Android at 60 Hz vs Steam Deck hidraw at 250 Hz).
 
         Args:
             report: Packed HID report bytes.
 
         Returns:
-            True if sent successfully.
+            True if the report was accepted into the queue.
         """
         if self._interrupt_client_fd is None:
             return False
@@ -1447,24 +1536,16 @@ class BTHIDService:
         if not self._protocol_ready:
             return False
 
-        try:
-            # HID data header: 0xA1 = DATA | INPUT
-            payload = b"\xa1" + report
-            written = os.write(self._interrupt_client_fd, payload)
-            self._report_count += 1
-            if self._report_count <= 5 or self._report_count % 500 == 0:
-                logger.info(
-                    "HID report #%d (%d/%d bytes): %s",
-                    self._report_count,
-                    written,
-                    len(payload),
-                    payload[:10].hex(),
-                )
-            return True
-        except OSError as e:
-            logger.error("Failed to send HID report: %s", e)
-            self._handle_disconnect()
-            return False
+        # Enqueue with "discard oldest" on full — keeps queue latency bounded
+        while True:
+            try:
+                self._send_queue.put_nowait(report)
+                return True
+            except queue.Full:
+                try:
+                    self._send_queue.get_nowait()  # drop stale report
+                except queue.Empty:
+                    pass  # race condition, retry
 
     def _handle_disconnect(self) -> None:
         """Handle device disconnection."""

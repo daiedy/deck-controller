@@ -9,7 +9,8 @@ from dataclasses import dataclass, field
 class TrackpadMouse:
     """Converts absolute trackpad positions to relative mouse deltas.
 
-    Steam Deck trackpads report absolute positions (0-32767).
+    Steam Deck trackpads report absolute positions as signed int16 with Y
+    increasing upward (hardware up = +Y, same convention as the sticks).
     This class tracks previous positions and calculates deltas.
     """
 
@@ -21,22 +22,29 @@ class TrackpadMouse:
     _prev_left_y: int = field(default=-1, repr=False)
     _right_touching: bool = field(default=False, repr=False)
     _left_touching: bool = field(default=False, repr=False)
+    # Sub-pixel accumulators to prevent small movements being eaten by int truncation
+    _accum_x: float = field(default=0.0, repr=False)
+    _accum_y: float = field(default=0.0, repr=False)
+    _accum_scroll: float = field(default=0.0, repr=False)
 
     def update_right(self, x: int, y: int, touching: bool) -> tuple[int, int]:
         """Update right trackpad position, return (dx, dy) mouse delta.
 
         Args:
-            x: Absolute X position (0-32767).
-            y: Absolute Y position (0-32767).
+            x: Absolute X position (signed int16, increases to the right).
+            y: Absolute Y position (signed int16, increases upward).
             touching: Whether finger is touching the pad.
 
         Returns:
             Tuple of (dx, dy) relative movement, clamped to -127..127.
+            Positive dx = right, positive dy = down (standard HID mouse axes).
         """
         if not touching:
             self._prev_right_x = -1
             self._prev_right_y = -1
             self._right_touching = False
+            self._accum_x = 0.0
+            self._accum_y = 0.0
             return (0, 0)
 
         if not self._right_touching or self._prev_right_x == -1:
@@ -52,10 +60,16 @@ class TrackpadMouse:
         self._prev_right_x = x
         self._prev_right_y = y
 
-        # Scale: trackpad range 0-32767, mouse delta -127..127
-        # Divide by 256 gives ~128 px of travel across full pad at sensitivity=1.0
-        dx = int(raw_dx * self.sensitivity / 256)
-        dy = int(raw_dy * self.sensitivity / 256)
+        # Scale: trackpad range ~-16384..16384, mouse delta -127..127
+        # Accumulate sub-pixel fractions to avoid small movements being lost to truncation.
+        # Y is negated: hardware Y increases upward, HID mouse Y increases downward.
+        self._accum_x += raw_dx * self.sensitivity / 256
+        self._accum_y += -raw_dy * self.sensitivity / 256
+
+        dx = int(self._accum_x)
+        dy = int(self._accum_y)
+        self._accum_x -= dx
+        self._accum_y -= dy
 
         return (max(-127, min(127, dx)), max(-127, min(127, dy)))
 
@@ -63,7 +77,7 @@ class TrackpadMouse:
         """Update left trackpad Y position, return scroll wheel delta.
 
         Args:
-            y: Absolute Y position (0-32767).
+            y: Absolute Y position (signed int16, increases upward).
             touching: Whether finger is touching the pad.
 
         Returns:
@@ -72,6 +86,7 @@ class TrackpadMouse:
         if not touching:
             self._prev_left_y = -1
             self._left_touching = False
+            self._accum_scroll = 0.0
             return 0
 
         if not self._left_touching or self._prev_left_y == -1:
@@ -82,8 +97,10 @@ class TrackpadMouse:
         raw_dy = y - self._prev_left_y
         self._prev_left_y = y
 
-        # Invert: moving finger up (decreasing Y) = scroll up (positive wheel)
-        wheel = int(-raw_dy * self.scroll_sensitivity / 512)
+        # Moving finger up (increasing Y) = scroll up (positive wheel).
+        self._accum_scroll += raw_dy * self.scroll_sensitivity / 512
+        wheel = int(self._accum_scroll)
+        self._accum_scroll -= wheel
         return max(-127, min(127, wheel))
 
     def reset(self) -> None:
@@ -93,3 +110,6 @@ class TrackpadMouse:
         self._prev_left_y = -1
         self._right_touching = False
         self._left_touching = False
+        self._accum_x = 0.0
+        self._accum_y = 0.0
+        self._accum_scroll = 0.0
