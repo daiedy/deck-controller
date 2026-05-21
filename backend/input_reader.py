@@ -712,6 +712,10 @@ class InputReader:
                 self._dev_path,
                 self._hid_device_id,
             )
+
+            # Step 7: Grab all virtual evdev devices so Steam cannot read
+            # controller events through the hid-steam virtual Xbox360 evdev.
+            self._grab_evdev()
             return True
 
         except Exception as e:
@@ -738,6 +742,9 @@ class InputReader:
             return False
 
         logger.info("Unblocking Steam input — HID device %s", hid_id)
+
+        # Release evdev grabs first so Steam can regain controller access
+        self._ungrab_evdev()
 
         try:
             # Step 1: Remove udev rule
