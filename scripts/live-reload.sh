@@ -84,7 +84,7 @@ echo -e "${GREEN}✓ SSH connection OK${NC}"
 
 # Ensure temp deploy directory exists on Deck
 # shellcheck disable=SC2086
-_ssh "${DECK_USER}@${DECK_HOST}" "mkdir -p ${DECK_DEPLOY_TMP}/{backend,defaults,assets,dist}"
+_ssh "${DECK_USER}@${DECK_HOST}" "mkdir -p ${DECK_DEPLOY_TMP}/{backend,defaults,assets,dist,scripts}"
 
 # --- Sync functions ---
 # DeckyLoader takes root ownership of plugin files, so we rsync to /tmp first,
@@ -110,7 +110,15 @@ sync_backend() {
     -e "$RSYNC_SSH" \
     "$REPO_DIR/assets/" \
     "$DST/assets/"
-  _ssh "${DECK_USER}@${DECK_HOST}" "sudo -n /usr/bin/bash -c 'cp -rf ${DECK_DEPLOY_TMP}/* ${DECK_PLUGIN_DIR}/'"
+  rsync -az --delete \
+    -e "$RSYNC_SSH" \
+    "$REPO_DIR/scripts/" \
+    "$DST/scripts/"
+  if [[ -n "$DECK_PASS" ]]; then
+    _ssh "${DECK_USER}@${DECK_HOST}" "echo '${DECK_PASS}' | sudo -S bash -c 'cp -rf ${DECK_DEPLOY_TMP}/* ${DECK_PLUGIN_DIR}/'"
+  else
+    _ssh "${DECK_USER}@${DECK_HOST}" "sudo -n /usr/bin/bash -c 'cp -rf ${DECK_DEPLOY_TMP}/* ${DECK_PLUGIN_DIR}/'"
+  fi
   echo -e "${GREEN}✓ Backend synced${NC}"
 }
 
@@ -128,17 +136,45 @@ sync_frontend() {
     -e "$RSYNC_SSH" \
     "$REPO_DIR/dist/" \
     "${DECK_USER}@${DECK_HOST}:${DECK_DEPLOY_TMP}/dist/"
-  _ssh "${DECK_USER}@${DECK_HOST}" "sudo -n /usr/bin/bash -c 'cp -rf ${DECK_DEPLOY_TMP}/dist/* ${DECK_PLUGIN_DIR}/dist/'"
+  if [[ -n "$DECK_PASS" ]]; then
+    _ssh "${DECK_USER}@${DECK_HOST}" "echo '${DECK_PASS}' | sudo -S bash -c 'cp -rf ${DECK_DEPLOY_TMP}/dist/* ${DECK_PLUGIN_DIR}/dist/'"
+  else
+    _ssh "${DECK_USER}@${DECK_HOST}" "sudo -n /usr/bin/bash -c 'cp -rf ${DECK_DEPLOY_TMP}/dist/* ${DECK_PLUGIN_DIR}/dist/'"
+  fi
   echo -e "${GREEN}✓ Frontend synced${NC}"
 }
 
+restore_input() {
+  echo -e "${YELLOW}↻ Restoring Steam Deck input controls...${NC}"
+  local RESTORE_SCRIPT="${DECK_PLUGIN_DIR}/scripts/restore-input.sh"
+  # shellcheck disable=SC2086
+  if [[ -n "$DECK_PASS" ]]; then
+    _ssh "${DECK_USER}@${DECK_HOST}" "echo '${DECK_PASS}' | sudo -S bash '${RESTORE_SCRIPT}'" 2>/dev/null || {
+      echo -e "${YELLOW}⚠ Input restore skipped (script may not exist yet)${NC}"
+    }
+  else
+    _ssh "${DECK_USER}@${DECK_HOST}" "sudo -n /usr/bin/bash '${RESTORE_SCRIPT}'" 2>/dev/null || {
+      echo -e "${YELLOW}⚠ Input restore skipped${NC}"
+    }
+  fi
+}
+
 restart_plugin() {
+  # Restore Steam Deck input BEFORE restart so buttons aren't stuck blocked
+  restore_input
   echo -e "${YELLOW}↻ Restarting DeckyLoader...${NC}"
   # shellcheck disable=SC2086
-  _ssh "${DECK_USER}@${DECK_HOST}" "sudo -n /usr/bin/systemctl restart plugin_loader" 2>/dev/null || {
-    echo -e "${RED}✗ Failed to restart plugin_loader (may need NOPASSWD sudo)${NC}"
-    return 1
-  }
+  if [[ -n "$DECK_PASS" ]]; then
+    _ssh "${DECK_USER}@${DECK_HOST}" "echo '${DECK_PASS}' | sudo -S systemctl restart plugin_loader" 2>/dev/null || {
+      echo -e "${RED}✗ Failed to restart plugin_loader${NC}"
+      return 1
+    }
+  else
+    _ssh "${DECK_USER}@${DECK_HOST}" "sudo -n /usr/bin/systemctl restart plugin_loader" 2>/dev/null || {
+      echo -e "${RED}✗ Failed to restart plugin_loader (may need NOPASSWD sudo)${NC}"
+      return 1
+    }
+  fi
   echo -e "${GREEN}✓ Plugin restarted${NC}"
 }
 

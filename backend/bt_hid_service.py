@@ -1177,18 +1177,29 @@ class BTHIDService:
                             connected = True
                         else:
                             self._failed_devices[target] = self._failed_devices.get(target, 0) + 1
+                            fail_count = self._failed_devices[target]
                             logger.info(
                                 "Outgoing connect failed for %s (%d consecutive failures)",
                                 target,
-                                self._failed_devices[target],
+                                fail_count,
                             )
+                            # Exponential backoff: 2s, 4s, 8s, max 30s
+                            if fail_count >= 3:
+                                backoff = min(2**fail_count, 30)
+                                logger.info("Backing off %ds before retry", backoff)
+                                await asyncio.sleep(backoff)
 
                 if not connected:
                     await asyncio.sleep(2)
                     continue
 
                 # --- Connected: verify socket health ---
-                self._log_connection_diagnostics()
+                if not self._log_connection_diagnostics():
+                    logger.warning("Connection dead on arrival (SO_ERROR/getpeername) — retrying")
+                    self._close_client_fds()
+                    self._connected_device = None
+                    await asyncio.sleep(2)
+                    continue
                 self._optimize_socket_latency()
 
                 self._report_count = 0
@@ -1288,8 +1299,13 @@ class BTHIDService:
         except Exception as e:
             logger.warning("DIAG error: %s", e)
 
-    def _log_connection_diagnostics(self) -> None:
-        """Log connection state after L2CAP channels established."""
+    def _log_connection_diagnostics(self) -> bool:
+        """Log connection state and verify L2CAP channels are alive.
+
+        Returns:
+            True if both channels are healthy (SO_ERROR == 0 and getpeername succeeds).
+        """
+        healthy = True
         try:
             ctrl_fd = self._control_client_fd
             intr_fd = self._interrupt_client_fd
@@ -1308,20 +1324,28 @@ class BTHIDService:
                         ctypes.byref(errlen),
                     )
                     logger.info("DIAG %s SO_ERROR=%d", name, err.value)
+                    if err.value != 0:
+                        healthy = False
 
-            # Check peer address
-            if intr_fd is not None:
-                peer_buf = ctypes.create_string_buffer(14)
-                peer_len = ctypes.c_int(14)
-                ret = _libc.getpeername(intr_fd, peer_buf, ctypes.byref(peer_len))
-                if ret == 0:
-                    raw = peer_buf.raw[4:10]
-                    peer_addr = ":".join(f"{b:02X}" for b in reversed(raw))
-                    logger.info("DIAG intr peer: %s", peer_addr)
-                else:
-                    logger.info("DIAG getpeername failed: %s", os.strerror(ctypes.get_errno()))
+            # Check peer address (verifies connection is alive)
+            for name, fd in [("ctrl", ctrl_fd), ("intr", intr_fd)]:
+                if fd is not None:
+                    peer_buf = ctypes.create_string_buffer(14)
+                    peer_len = ctypes.c_int(14)
+                    ret = _libc.getpeername(fd, peer_buf, ctypes.byref(peer_len))
+                    if ret == 0:
+                        raw = peer_buf.raw[4:10]
+                        peer_addr = ":".join(f"{b:02X}" for b in reversed(raw))
+                        logger.info("DIAG %s peer: %s", name, peer_addr)
+                    else:
+                        logger.info(
+                            "DIAG %s getpeername failed: %s", name, os.strerror(ctypes.get_errno())
+                        )
+                        healthy = False
         except Exception as e:
             logger.warning("DIAG connection check error: %s", e)
+            healthy = False
+        return healthy
 
     def _optimize_socket_latency(self) -> None:
         """Apply low-latency socket options to connected L2CAP channels.
@@ -1569,6 +1593,29 @@ class BTHIDService:
 
             # Non-blocking mode for direct-write mouse path
             _l2cap_set_nonblock(self._interrupt_client_fd)
+
+            # Wait briefly for async errors (Android may RST immediately)
+            await asyncio.sleep(0.1)
+
+            # Verify both channels are alive after the brief settle time
+            for name, fd in [
+                ("ctrl", self._control_client_fd),
+                ("intr", self._interrupt_client_fd),
+            ]:
+                err = ctypes.c_int(0)
+                errlen = ctypes.c_int(ctypes.sizeof(err))
+                _libc.getsockopt(
+                    fd, socket.SOL_SOCKET, socket.SO_ERROR, ctypes.byref(err), ctypes.byref(errlen)
+                )
+                if err.value != 0:
+                    logger.error(
+                        "Channel %s dead after connect: SO_ERROR=%d (%s)",
+                        name,
+                        err.value,
+                        os.strerror(err.value),
+                    )
+                    self._close_client_fds()
+                    return False
 
             return True
         except (OSError, asyncio.TimeoutError) as e:
