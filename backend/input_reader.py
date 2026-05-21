@@ -827,28 +827,29 @@ class InputReader:
         """Signal the read loop to restart with the current (new) fd.
 
         Called after _block_steam_input / _unblock_steam_input swaps the fd.
-        The old reader thread will die from ENODEV; the read loop restarts it.
+        Sets stop_event so the reader thread exits immediately.
         """
         self._device_swapped = True
+        if self._reader_stop_event is not None:
+            self._reader_stop_event.set()
 
     # ------------------------------------------------------------------
-    # Read loop (threaded I/O → asyncio queue)
+    # Read loop (threaded I/O — reports processed in-thread)
     # ------------------------------------------------------------------
 
     async def _read_loop(self) -> None:
         """Read loop using a background thread for blocking reads.
 
-        Supports device swaps: when toggle_grab() rebinds the HID device,
-        the old reader thread dies and this loop restarts it with the new fd.
+        Report processing and callback invocation happen directly inside the
+        reader thread to eliminate asyncio event-loop round-trips.  The asyncio
+        task only manages the thread lifecycle and device-swap restarts.
         """
         if self._fd is None:
             return
 
         self._device_swapped = False
-        loop = asyncio.get_event_loop()
         use_hidraw = self._use_hidraw
         read_size = VALVE_REPORT_SIZE if use_hidraw else INPUT_EVENT_SIZE * 64
-        report_count = 0
 
         while self._running:
             fd = self._fd
@@ -856,91 +857,85 @@ class InputReader:
                 await asyncio.sleep(0.1)
                 continue
 
-            queue: asyncio.Queue[bytes] = asyncio.Queue()
             stop_event = threading.Event()
+            self._reader_stop_event = stop_event
             self._device_swapped = False
-
-            def _put_report(data: bytes) -> None:
-                """Drop stale reports then enqueue newest. Runs in event loop."""
-                while not queue.empty():
-                    try:
-                        queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                queue.put_nowait(data)
+            thread_error: list[Optional[Exception]] = [None]
 
             def _reader_thread(
                 fd_local: int = fd,
                 stop_local: threading.Event = stop_event,
-                queue_local: asyncio.Queue[bytes] = queue,
             ) -> None:
-                while not stop_local.is_set():
-                    # Use select() for low-latency blocking wait; timeout lets us
-                    # check stop_event periodically without busy-spinning.
-                    ready, _, _ = select.select([fd_local], [], [], 0.05)
-                    if not ready:
-                        continue
-                    try:
-                        data = os.read(fd_local, read_size)
-                        if data:
-                            loop.call_soon_threadsafe(_put_report, data)
-                    except BlockingIOError:
-                        pass  # shouldn't happen with blocking fd, but handle gracefully
-                    except OSError:
-                        loop.call_soon_threadsafe(_put_report, b"")
-                        break
+                report_count = 0
+                evdev_buf = b""
+                try:
+                    while not stop_local.is_set():
+                        ready, _, _ = select.select([fd_local], [], [], 0.05)
+                        if not ready:
+                            continue
+                        try:
+                            data = os.read(fd_local, read_size)
+                        except BlockingIOError:
+                            continue
+                        except OSError:
+                            break
+                        if not data:
+                            break
+
+                        if use_hidraw:
+                            if len(data) == VALVE_REPORT_SIZE:
+                                report_count += 1
+                                if report_count <= 3 or report_count % 1000 == 0:
+                                    logger.info("hidraw #%d: %s", report_count, data[:16].hex())
+                                self._process_hidraw_report(data)
+                        else:
+                            evdev_buf += data
+                            while len(evdev_buf) >= INPUT_EVENT_SIZE:
+                                raw = evdev_buf[:INPUT_EVENT_SIZE]
+                                evdev_buf = evdev_buf[INPUT_EVENT_SIZE:]
+                                (
+                                    _sec,
+                                    _usec,
+                                    ev_type,
+                                    ev_code,
+                                    ev_value,
+                                ) = struct.unpack(INPUT_EVENT_FORMAT, raw)
+                                report_count += 1
+                                if report_count <= 5 or report_count % 1000 == 0:
+                                    logger.info(
+                                        "evdev #%d: type=%d code=0x%x val=%d",
+                                        report_count,
+                                        ev_type,
+                                        ev_code,
+                                        ev_value,
+                                    )
+                                self._process_event(ev_type, ev_code, ev_value)
+                except Exception as exc:
+                    thread_error[0] = exc
 
             thread = threading.Thread(target=_reader_thread, daemon=True, name="input-reader")
             thread.start()
             logger.info(
-                "Read loop started (threaded), fd=%s, mode=%s",
+                "Read loop started (in-thread processing), fd=%s, mode=%s",
                 fd,
                 "hidraw" if use_hidraw else "evdev",
             )
 
             try:
-                if use_hidraw:
-                    while self._running:
-                        data = await queue.get()
-                        if not data:
-                            break  # fd died — check for device swap
-                        if len(data) == VALVE_REPORT_SIZE:
-                            report_count += 1
-                            if report_count <= 3 or report_count % 1000 == 0:
-                                logger.info("hidraw #%d: %s", report_count, data[:16].hex())
-                            self._process_hidraw_report(data)
-                else:
-                    buf = b""
-                    while self._running:
-                        data = await queue.get()
-                        if not data:
-                            break
-                        buf += data
-                        while len(buf) >= INPUT_EVENT_SIZE:
-                            raw = buf[:INPUT_EVENT_SIZE]
-                            buf = buf[INPUT_EVENT_SIZE:]
-                            _sec, _usec, ev_type, ev_code, ev_value = struct.unpack(
-                                INPUT_EVENT_FORMAT, raw
-                            )
-                            report_count += 1
-                            if report_count <= 5 or report_count % 1000 == 0:
-                                logger.info(
-                                    "evdev #%d: type=%d code=0x%x val=%d",
-                                    report_count,
-                                    ev_type,
-                                    ev_code,
-                                    ev_value,
-                                )
-                            self._process_event(ev_type, ev_code, ev_value)
+                # Wait for thread to finish while staying cancellable
+                while thread.is_alive() and self._running and not self._device_swapped:
+                    await asyncio.sleep(0.1)
             except asyncio.CancelledError:
                 stop_event.set()
                 thread.join(timeout=1.0)
                 raise
-            except Exception as e:
-                logger.error("Unexpected error in read loop: %s", e)
             finally:
                 stop_event.set()
                 thread.join(timeout=1.0)
+                self._reader_stop_event = None
+
+            if thread_error[0] is not None:
+                logger.error("Reader thread error: %s", thread_error[0])
 
             # If device was swapped (toggle_grab), restart with new fd
             if self._device_swapped and self._running:

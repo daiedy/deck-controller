@@ -1645,7 +1645,7 @@ class BTHIDService:
         """
         while not self._send_thread_stop.is_set():
             try:
-                report = self._send_queue.get(timeout=0.1)
+                report = self._send_queue.get(timeout=0.005)
             except queue.Empty:
                 continue
             if report is None:  # sentinel — stop requested
