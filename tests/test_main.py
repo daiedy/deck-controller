@@ -448,6 +448,30 @@ class TestOnInputStateChange:
         # mouse_buttons=0x01 triggers a report
         p.bt_service.send_mouse_report.assert_called_once()
 
+    def test_gamepad_skipped_when_only_trackpad_changes(self):
+        """When only trackpad moves, no redundant gamepad report is sent."""
+        p = _make_plugin()
+        p.profile_manager.active_profile = Profile(
+            name="Both",
+            active_reports=["gamepad", "mouse"],
+            trackpad_mode="mouse",
+        )
+        p.trackpad_mouse.update_right.return_value = (5, 3)
+        p.trackpad_mouse.update_left.return_value = 0
+
+        # First call — gamepad sent (initial state differs from empty tuple)
+        state1 = InputState(buttons=0, trackpad_right_touch=True, trackpad_right_x=100)
+        p._on_input_state_change(state1)
+        assert p.bt_service.send_report.call_count == 1
+
+        # Second call — same gamepad state, different trackpad
+        state2 = InputState(buttons=0, trackpad_right_touch=True, trackpad_right_x=200)
+        p._on_input_state_change(state2)
+        # Gamepad should NOT be sent again (no change in buttons/sticks/triggers)
+        assert p.bt_service.send_report.call_count == 1
+        # But mouse should be sent both times
+        assert p.bt_service.send_mouse_report.call_count == 2
+
 
 # ---- _on_motion_state_change ----
 

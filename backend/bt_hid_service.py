@@ -1657,12 +1657,7 @@ class BTHIDService:
             if fd is None:
                 continue
 
-            # Send gamepad/motion report (latest state)
-            if gamepad is not None:
-                if not self._write_hid_report(fd, gamepad):
-                    break
-
-            # Send accumulated mouse deltas
+            # Send accumulated mouse deltas first (more latency-sensitive)
             mouse_buttons, mouse_dx, mouse_dy, mouse_wheel = mouse
             if mouse_dx or mouse_dy or mouse_wheel or mouse_buttons:
                 clamped_dx = max(-127, min(127, mouse_dx))
@@ -1688,6 +1683,11 @@ class BTHIDService:
                         self._pending_mouse[2] += rem_dy
                         self._pending_mouse[3] += rem_wheel
                     self._pending_event.set()
+
+            # Send gamepad/motion report (latest state)
+            if gamepad is not None:
+                if not self._write_hid_report(fd, gamepad):
+                    break
 
     def _write_hid_report(self, fd: int, report: bytes) -> bool:
         """Write a single HID report to the interrupt channel.

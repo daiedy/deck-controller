@@ -120,6 +120,7 @@ class Plugin:
         """Callback for input state changes — sends HID reports based on active profile."""
         if not hasattr(self, "_input_cb_count"):
             self._input_cb_count = 0
+            self._prev_gamepad_key: tuple[int, ...] = ()
         self._input_cb_count += 1
         if self._input_cb_count <= 5 or self._input_cb_count % 500 == 0:
             logger.info(
@@ -131,21 +132,7 @@ class Plugin:
             )
         profile = self.profile_manager.active_profile
 
-        # Gamepad report
-        if profile.sends_gamepad():
-            report = pack_report(
-                buttons=state.buttons,
-                left_x=state.left_x,
-                left_y=state.left_y,
-                right_x=state.right_x,
-                right_y=state.right_y,
-                l2=state.l2,
-                r2=state.r2,
-                dpad=state.dpad,
-            )
-            self.bt_service.send_report(report)
-
-        # Mouse report
+        # Mouse report (sent first — more latency-sensitive than gamepad)
         if profile.sends_mouse() and profile.trackpad_mode == "mouse":
             dx, dy = self.trackpad_mouse.update_right(
                 state.trackpad_right_x,
@@ -164,6 +151,32 @@ class Plugin:
 
             if dx or dy or wheel or mouse_buttons:
                 self.bt_service.send_mouse_report(mouse_buttons, dx, dy, wheel)
+
+        # Gamepad report — only when gamepad-relevant state actually changed
+        if profile.sends_gamepad():
+            gamepad_key = (
+                state.buttons,
+                state.left_x,
+                state.left_y,
+                state.right_x,
+                state.right_y,
+                state.l2,
+                state.r2,
+                state.dpad,
+            )
+            if gamepad_key != self._prev_gamepad_key:
+                self._prev_gamepad_key = gamepad_key
+                report = pack_report(
+                    buttons=state.buttons,
+                    left_x=state.left_x,
+                    left_y=state.left_y,
+                    right_x=state.right_x,
+                    right_y=state.right_y,
+                    l2=state.l2,
+                    r2=state.r2,
+                    dpad=state.dpad,
+                )
+                self.bt_service.send_report(report)
 
     def _on_motion_state_change(self, state: MotionState) -> None:
         """Callback for IMU state changes — sends motion HID report."""
