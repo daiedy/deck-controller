@@ -1710,10 +1710,27 @@ class BTHIDService:
             self._send_control(b"\xa0\x01")  # DATA | report protocol
         elif msg_type == 0x04:  # GET_REPORT
             from .hid_descriptor import DPAD_NEUTRAL
-            from .hid_descriptor import pack_report as _pack
+            from .hid_descriptor import pack_mouse_report as _pack_mouse
+            from .hid_descriptor import pack_report as _pack_gamepad
+            from .hid_descriptor import pack_trackpad_report as _pack_trackpad
 
-            report = _pack(0, 0, 0, 0, 0, 0, 0, DPAD_NEUTRAL)
-            self._send_control(b"\xa3" + report)
+            # Bit 3 of param = "has Report ID in data[1]"
+            report_id = data[1] if (param & 0x08) and len(data) > 1 else 0x01
+            report_type = param & 0x03  # 1=input, 2=output, 3=feature
+            data_header = bytes([0xA0 | (report_type & 0x0F)])
+
+            logger.info("GET_REPORT: type=%d report_id=0x%02x", report_type, report_id)
+
+            if report_id == 0x02:
+                report_data = _pack_mouse(0, 0, 0, 0)
+            elif report_id == 0x04:
+                report_data = _pack_trackpad(0x04, False, 0, 0, False)
+            elif report_id == 0x05:
+                report_data = _pack_trackpad(0x05, False, 0, 0, False)
+            else:
+                report_data = _pack_gamepad(0, 0, 0, 0, 0, 0, 0, DPAD_NEUTRAL)
+
+            self._send_control(data_header + report_data)
         elif msg_type == 0x05:  # SET_REPORT
             self._send_control(b"\x00")  # HANDSHAKE(successful)
         elif msg_type == 0x01:  # HID_CONTROL (suspend/exit/unplug)
