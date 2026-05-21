@@ -417,7 +417,7 @@ class TestOnInputStateChange:
 
         state = InputState(trackpad_right_touch=True, trackpad_right_x=100)
         p._on_input_state_change(state)
-        p.bt_service.send_report.assert_called_once()
+        p.bt_service.send_mouse_report.assert_called_once_with(0, 5, 3, 0)
 
     def test_mouse_report_skipped_when_no_movement(self):
         p = _make_plugin()
@@ -431,7 +431,7 @@ class TestOnInputStateChange:
 
         state = InputState()
         p._on_input_state_change(state)
-        p.bt_service.send_report.assert_not_called()
+        p.bt_service.send_mouse_report.assert_not_called()
 
     def test_right_click_sets_left_button(self):
         p = _make_plugin()
@@ -446,7 +446,7 @@ class TestOnInputStateChange:
         state = InputState(trackpad_right_click=True)
         p._on_input_state_change(state)
         # mouse_buttons=0x01 triggers a report
-        p.bt_service.send_report.assert_called_once()
+        p.bt_service.send_mouse_report.assert_called_once()
 
 
 # ---- _on_motion_state_change ----

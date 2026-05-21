@@ -89,7 +89,7 @@ class TestSendReport:
         assert svc.send_report(b"\x01\x00") is False
 
     def test_sends_with_header(self):
-        """send_report enqueues the report and the sender thread writes it."""
+        """send_report stores report in pending gamepad slot."""
         svc = BTHIDService()
         svc._interrupt_client_fd = 42
         svc._protocol_ready = True
@@ -97,9 +97,8 @@ class TestSendReport:
         result = svc.send_report(b"\x01\x00\x00")
 
         assert result is True
-        # Report is placed in the send queue for the sender thread
-        assert not svc._send_queue.empty()
-        assert svc._send_queue.get_nowait() == b"\x01\x00\x00"
+        assert svc._pending_gamepad == b"\x01\x00\x00"
+        assert svc._pending_event.is_set()
 
     def test_sender_thread_writes_with_header(self):
         """Sender thread prepends 0xA1 header and calls os.write."""
@@ -112,7 +111,7 @@ class TestSendReport:
         with patch("backend.bt_hid_service.os.write") as mock_write:
             mock_write.return_value = 4
             svc._start_sender_thread()
-            svc._send_queue.put_nowait(b"\x01\x00\x00")
+            svc.send_report(b"\x01\x00\x00")
             time.sleep(0.15)  # let sender thread process
             svc._stop_sender_thread()
 
@@ -131,14 +130,74 @@ class TestSendReport:
         with patch("backend.bt_hid_service.os.write", side_effect=OSError("conn lost")), \
              patch("backend.bt_hid_service.os.close"):
             svc._start_sender_thread()
-            svc._send_queue.put_nowait(b"\x01\x00")
+            svc.send_report(b"\x01\x00")
             time.sleep(0.2)  # let sender thread hit the error
             svc._send_thread_stop.set()
+            svc._pending_event.set()
             if svc._send_thread:
                 svc._send_thread.join(timeout=1.0)
 
         assert svc._connected_device is None
         assert svc._interrupt_client_fd is None
+
+
+# ---- send_mouse_report ----
+
+
+class TestSendMouseReport:
+    def test_no_client_returns_false(self):
+        svc = BTHIDService()
+        assert svc.send_mouse_report(0, 10, 20, 0) is False
+
+    def test_accumulates_deltas(self):
+        """Multiple calls accumulate dx/dy/wheel."""
+        svc = BTHIDService()
+        svc._interrupt_client_fd = 42
+        svc._protocol_ready = True
+
+        svc.send_mouse_report(0, 10, 5, 0)
+        svc.send_mouse_report(0, 15, -3, 1)
+
+        assert svc._pending_mouse == [0, 25, 2, 1]
+        assert svc._pending_event.is_set()
+
+    def test_ors_buttons(self):
+        """Button bits are OR'd across calls."""
+        svc = BTHIDService()
+        svc._interrupt_client_fd = 42
+        svc._protocol_ready = True
+
+        svc.send_mouse_report(0x01, 0, 0, 0)  # left
+        svc.send_mouse_report(0x04, 0, 0, 0)  # middle
+
+        assert svc._pending_mouse[0] == 0x05
+
+    def test_sender_thread_writes_accumulated(self):
+        """Sender thread drains accumulated mouse deltas."""
+        import time
+
+        svc = BTHIDService()
+        svc._interrupt_client_fd = 42
+        svc._protocol_ready = True
+
+        with patch("backend.bt_hid_service.os.write") as mock_write:
+            mock_write.return_value = 6
+            svc._start_sender_thread()
+            svc.send_mouse_report(0x01, 30, -20, 2)
+            time.sleep(0.15)
+            svc._stop_sender_thread()
+
+        mock_write.assert_called_once()
+        payload = mock_write.call_args[0][1]
+        # 0xa1 header + report ID 0x02 + buttons 0x01 + dx=30 + dy=-20 + wheel=2
+        assert payload[0:1] == b"\xa1"
+        assert payload[1:2] == b"\x02"  # report ID
+        assert payload[2:3] == b"\x01"  # buttons
+        import struct
+        dx, dy, wheel = struct.unpack_from("<bbb", payload, 3)
+        assert dx == 30
+        assert dy == -20
+        assert wheel == 2
 
 
 # ---- _handle_disconnect ----

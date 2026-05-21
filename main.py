@@ -34,12 +34,7 @@ except ImportError:
 
 from backend.bt_hid_service import BTHIDService  # noqa: E402
 from backend.config import Config  # noqa: E402
-from backend.hid_descriptor import (  # noqa: E402
-    DPAD_NEUTRAL,
-    pack_motion_report,
-    pack_mouse_report,
-    pack_report,
-)
+from backend.hid_descriptor import DPAD_NEUTRAL, pack_motion_report, pack_report  # noqa: E402
 from backend.imu_reader import IMUReader, MotionState  # noqa: E402
 from backend.input_reader import InputReader, InputState  # noqa: E402
 from backend.profile_manager import Profile, ProfileManager  # noqa: E402
@@ -168,8 +163,7 @@ class Plugin:
                 mouse_buttons |= 0x04  # Middle click
 
             if dx or dy or wheel or mouse_buttons:
-                mouse_report = pack_mouse_report(mouse_buttons, dx, dy, wheel)
-                self.bt_service.send_report(mouse_report)
+                self.bt_service.send_mouse_report(mouse_buttons, dx, dy, wheel)
 
     def _on_motion_state_change(self, state: MotionState) -> None:
         """Callback for IMU state changes — sends motion HID report."""

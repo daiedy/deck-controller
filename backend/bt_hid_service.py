@@ -9,7 +9,6 @@ import fcntl
 import logging
 import os
 import pty
-import queue
 import select as _select_mod
 import socket
 import struct
@@ -242,9 +241,13 @@ class BTHIDService:
         self._clean_env.pop("LD_LIBRARY_PATH", None)
         self._clean_env.pop("LD_LIBRARY_PATH_ORIG", None)
         # Sender thread — moves blocking os.write() off the asyncio event loop.
-        # Bounded queue with "discard oldest" semantics prevents latency buildup
-        # when the BT host (e.g. Android) consumes reports slower than 250 Hz.
-        self._send_queue: queue.Queue[Optional[bytes]] = queue.Queue(maxsize=8)
+        # Uses lock-based atomic state instead of a queue:
+        # - Gamepad/motion reports: latest-wins (only newest state matters)
+        # - Mouse reports: accumulated deltas (never dropped — every delta counts)
+        self._pending_lock: threading.Lock = threading.Lock()
+        self._pending_gamepad: Optional[bytes] = None
+        self._pending_mouse: list[int] = [0, 0, 0, 0]  # [buttons, dx, dy, wheel]
+        self._pending_event: threading.Event = threading.Event()
         self._send_thread: Optional[threading.Thread] = None
         self._send_thread_stop: threading.Event = threading.Event()
         # Unix SEQPACKET socket used to receive connection fds from the BlueZ
@@ -1605,16 +1608,14 @@ class BTHIDService:
     def _start_sender_thread(self) -> None:
         """Start the background BT sender thread.
 
-        Drains any stale items from the queue before starting so we don't
-        send leftover reports from a previous connection.
+        Resets pending state so we don't send stale data from a previous
+        connection.
         """
         self._send_thread_stop.clear()
-        # Drain stale items
-        while not self._send_queue.empty():
-            try:
-                self._send_queue.get_nowait()
-            except queue.Empty:
-                break
+        with self._pending_lock:
+            self._pending_gamepad = None
+            self._pending_mouse[:] = [0, 0, 0, 0]
+        self._pending_event.clear()
         self._send_thread = threading.Thread(
             target=self._sender_thread_func, daemon=True, name="bt-sender"
         )
@@ -1627,78 +1628,142 @@ class BTHIDService:
         Must NOT be called from within the sender thread itself.
         """
         self._send_thread_stop.set()
-        # Unblock get() if thread is waiting
-        try:
-            self._send_queue.put_nowait(None)  # sentinel
-        except queue.Full:
-            pass
+        self._pending_event.set()  # wake the thread so it sees stop flag
         if self._send_thread is not None:
             self._send_thread.join(timeout=2.0)
             self._send_thread = None
 
     def _sender_thread_func(self) -> None:
-        """Sender thread: dequeue reports and write to the interrupt channel.
+        """Sender thread: send pending reports to the interrupt channel.
 
-        Runs until stop is requested or a write error occurs.
-        Uses blocking os.write() safely in its own thread so the asyncio
-        event loop is never stalled by a slow BT host.
+        Uses lock-based atomic state instead of a FIFO queue:
+        - Gamepad reports use latest-wins — only the most recent state is sent.
+        - Mouse reports accumulate deltas — no movement is ever lost.
+        - threading.Event provides instant wakeup (no polling delay).
         """
         while not self._send_thread_stop.is_set():
-            try:
-                report = self._send_queue.get(timeout=0.005)
-            except queue.Empty:
-                continue
-            if report is None:  # sentinel — stop requested
+            self._pending_event.wait(timeout=0.1)
+            if self._send_thread_stop.is_set():
                 break
+            self._pending_event.clear()
+
+            with self._pending_lock:
+                gamepad = self._pending_gamepad
+                self._pending_gamepad = None
+                mouse = self._pending_mouse[:]
+                self._pending_mouse[:] = [0, 0, 0, 0]
+
             fd = self._interrupt_client_fd
             if fd is None:
                 continue
-            try:
-                payload = b"\xa1" + report
-                os.write(fd, payload)
-                self._report_count += 1
-                if self._report_count <= 5 or self._report_count % 500 == 0:
-                    logger.info(
-                        "HID report #%d (%d bytes): %s",
-                        self._report_count,
-                        len(payload),
-                        payload[:10].hex(),
-                    )
-            except OSError as e:
-                logger.error("Failed to send HID report: %s", e)
-                self._handle_disconnect()
-                break
+
+            # Send gamepad/motion report (latest state)
+            if gamepad is not None:
+                if not self._write_hid_report(fd, gamepad):
+                    break
+
+            # Send accumulated mouse deltas
+            mouse_buttons, mouse_dx, mouse_dy, mouse_wheel = mouse
+            if mouse_dx or mouse_dy or mouse_wheel or mouse_buttons:
+                clamped_dx = max(-127, min(127, mouse_dx))
+                clamped_dy = max(-127, min(127, mouse_dy))
+                clamped_wheel = max(-127, min(127, mouse_wheel))
+                mouse_report = struct.pack(
+                    "<BBbbb",
+                    0x02,
+                    mouse_buttons & 0x07,
+                    clamped_dx,
+                    clamped_dy,
+                    clamped_wheel,
+                )
+                if not self._write_hid_report(fd, mouse_report):
+                    break
+                # If deltas exceeded ±127, keep remainder for next cycle
+                rem_dx = mouse_dx - clamped_dx
+                rem_dy = mouse_dy - clamped_dy
+                rem_wheel = mouse_wheel - clamped_wheel
+                if rem_dx or rem_dy or rem_wheel:
+                    with self._pending_lock:
+                        self._pending_mouse[1] += rem_dx
+                        self._pending_mouse[2] += rem_dy
+                        self._pending_mouse[3] += rem_wheel
+                    self._pending_event.set()
+
+    def _write_hid_report(self, fd: int, report: bytes) -> bool:
+        """Write a single HID report to the interrupt channel.
+
+        Returns True on success, False on error (caller should break).
+        """
+        try:
+            payload = b"\xa1" + report
+            os.write(fd, payload)
+            self._report_count += 1
+            if self._report_count <= 5 or self._report_count % 500 == 0:
+                logger.info(
+                    "HID report #%d (%d bytes): %s",
+                    self._report_count,
+                    len(payload),
+                    payload[:10].hex(),
+                )
+            return True
+        except OSError as e:
+            logger.error("Failed to send HID report: %s", e)
+            self._handle_disconnect()
+            return False
 
     def send_report(self, report: bytes) -> bool:
-        """Enqueue an HID report for sending on the interrupt channel.
+        """Submit a gamepad or motion HID report (latest-wins semantics).
 
-        Non-blocking: if the send queue is full the oldest pending report is
-        discarded and replaced by this one.  This prevents latency from
-        accumulating when the BT host consumes reports slower than they are
-        produced (e.g. Android at 60 Hz vs Steam Deck hidraw at 250 Hz).
+        Only the most recent report is kept — if a new report arrives before
+        the sender thread processes the previous one, the old one is silently
+        replaced.  This is correct for absolute-state reports (gamepad axes,
+        buttons, motion sensors) where only the current state matters.
 
         Args:
             report: Packed HID report bytes.
 
         Returns:
-            True if the report was accepted into the queue.
+            True if the report was accepted.
         """
         if self._interrupt_client_fd is None:
             return False
-
         if not self._protocol_ready:
             return False
 
-        # Enqueue with "discard oldest" on full — keeps queue latency bounded
-        while True:
-            try:
-                self._send_queue.put_nowait(report)
-                return True
-            except queue.Full:
-                try:
-                    self._send_queue.get_nowait()  # drop stale report
-                except queue.Empty:
-                    pass  # race condition, retry
+        with self._pending_lock:
+            self._pending_gamepad = report
+        self._pending_event.set()
+        return True
+
+    def send_mouse_report(self, buttons: int, dx: int, dy: int, wheel: int) -> bool:
+        """Accumulate mouse deltas for sending (no data is ever dropped).
+
+        Unlike send_report() which uses latest-wins, mouse reports contain
+        relative deltas that must ALL be transmitted.  Deltas are summed into
+        an accumulator; the sender thread drains the accumulated values and
+        packs a single HID mouse report per cycle.
+
+        Args:
+            buttons: 3-bit button bitmask (bit 0=left, 1=right, 2=middle).
+            dx: Relative X movement.
+            dy: Relative Y movement.
+            wheel: Scroll wheel delta.
+
+        Returns:
+            True if accepted.
+        """
+        if self._interrupt_client_fd is None:
+            return False
+        if not self._protocol_ready:
+            return False
+
+        with self._pending_lock:
+            self._pending_mouse[0] |= buttons
+            self._pending_mouse[1] += dx
+            self._pending_mouse[2] += dy
+            self._pending_mouse[3] += wheel
+        self._pending_event.set()
+        return True
 
     def _handle_disconnect(self) -> None:
         """Handle device disconnection."""
