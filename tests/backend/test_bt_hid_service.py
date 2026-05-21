@@ -160,24 +160,11 @@ class TestSendMouseReport:
             svc.send_mouse_report(0, 10, 5, 0)
             svc.send_mouse_report(0, 15, -3, 1)
 
-        # Two direct writes
-        assert mock_write.call_count == 2
-
-    def test_burst_sends_multiple_on_large_delta(self):
-        """When delta exceeds ±127, multiple reports are sent in burst."""
-        svc = BTHIDService()
-        svc._interrupt_client_fd = 42
-        svc._protocol_ready = True
-
-        with patch("backend.bt_hid_service.os.write") as mock_write:
-            mock_write.return_value = 6
-            # dx=200 needs 2 reports: 127 + 73
-            svc.send_mouse_report(0, 200, 0, 0)
-
+        # Two direct writes (one per call)
         assert mock_write.call_count == 2
 
     def test_drops_on_blocking(self):
-        """When os.write raises BlockingIOError, remainder is dropped (no accumulation)."""
+        """When os.write raises BlockingIOError, frame is dropped (no accumulation)."""
         svc = BTHIDService()
         svc._interrupt_client_fd = 42
         svc._protocol_ready = True

@@ -2,34 +2,14 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 
-# Acceleration curve parameters
-_ACCEL_THRESHOLD = 3.0  # Below this speed: 1:1 (precise aiming)
-_ACCEL_MULTIPLIER = 1.8  # Speed boost above threshold
-_ACCEL_CAP = 6.0  # Maximum multiplier cap
-
-# Base scaling: trackpad units → mouse units
-# Trackpad range ~±16384, at 250Hz a fast swipe produces ~2000 units/frame.
-# We want slow movement (< 200 units) to map precisely and fast movement
-# (> 500 units) to cover large screen distances.
-_BASE_SCALE = 1.0 / 128  # Increased from 1/256 — more responsive base
-
-
-def _apply_acceleration(raw: float) -> float:
-    """Apply mouse-style acceleration curve to a raw delta.
-
-    Below threshold: linear 1:1 mapping (precision).
-    Above threshold: power curve for faster large movements.
-    """
-    magnitude = abs(raw)
-    if magnitude < _ACCEL_THRESHOLD:
-        return raw
-    # Smooth acceleration above threshold
-    accel = 1.0 + (_ACCEL_MULTIPLIER - 1.0) * math.log1p(magnitude - _ACCEL_THRESHOLD)
-    accel = min(accel, _ACCEL_CAP)
-    return raw * accel
+# Base scaling: trackpad units → mouse units.
+# Linear scale — no acceleration curve. Predictable 1:1 feel at all speeds.
+# Steam Deck trackpad ≈32768 units across ~40mm surface, at 250Hz.
+# 256 trackpad units = 1 mouse pixel. A moderate swipe (~50mm/s) produces
+# ~160 units/frame → ~0.6 px/frame → ~156 px/sec (comfortable desktop speed).
+_BASE_SCALE = 1.0 / 256
 
 
 @dataclass
@@ -40,8 +20,7 @@ class TrackpadMouse:
     increasing upward (hardware up = +Y, same convention as the sticks).
     This class tracks previous positions and calculates deltas.
 
-    Uses a mouse-style acceleration curve: slow movements are precise,
-    fast movements cover large distances.
+    Uses linear scaling (no acceleration) for predictable, consistent feel.
     """
 
     sensitivity: float = 1.0
@@ -90,18 +69,14 @@ class TrackpadMouse:
         self._prev_right_x = x
         self._prev_right_y = y
 
-        # Scale to mouse units and apply acceleration
+        # Scale to mouse units (linear, no acceleration)
         # Y is negated: hardware Y increases upward, HID mouse Y increases downward.
         scaled_dx = raw_dx * self.sensitivity * _BASE_SCALE
         scaled_dy = -raw_dy * self.sensitivity * _BASE_SCALE
 
-        # Apply acceleration curve (makes slow movements precise, fast movements big)
-        accel_dx = _apply_acceleration(scaled_dx)
-        accel_dy = _apply_acceleration(scaled_dy)
-
         # Accumulate sub-pixel fractions
-        self._accum_x += accel_dx
-        self._accum_y += accel_dy
+        self._accum_x += scaled_dx
+        self._accum_y += scaled_dy
 
         dx = int(self._accum_x)
         dy = int(self._accum_y)

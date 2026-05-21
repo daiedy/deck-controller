@@ -1877,20 +1877,19 @@ class BTHIDService:
         return True
 
     def send_mouse_report(self, buttons: int, dx: int, dy: int, wheel: int) -> bool:
-        """Send mouse report with minimal latency (direct-write burst path).
+        """Send single mouse HID report with minimal latency.
 
-        Writes HID mouse reports directly from the calling thread.  If the
-        delta exceeds ±127 (fast swipe), sends multiple back-to-back reports
-        immediately rather than deferring remainder to the sender thread.
+        Writes one report directly from the calling thread (input reader).
+        Deltas are clamped to ±127. If the BT buffer is full, this frame
+        is dropped — next frame will carry fresh positional data.
 
-        If the direct write would block (BT buffer full), drops the remaining
-        data for this frame (latest-position-wins — next frame will be fresh).
+        No burst, no accumulation — keeps the pipeline simple and predictable.
 
         Args:
             buttons: 3-bit button bitmask (bit 0=left, 1=right, 2=middle).
-            dx: Relative X movement.
-            dy: Relative Y movement.
-            wheel: Scroll wheel delta.
+            dx: Relative X movement (clamped to ±127).
+            dy: Relative Y movement (clamped to ±127).
+            wheel: Scroll wheel delta (clamped to ±127).
 
         Returns:
             True if accepted.
@@ -1901,35 +1900,25 @@ class BTHIDService:
         if not self._protocol_ready:
             return False
 
-        btn = buttons & 0x07
-        rem_dx = dx
-        rem_dy = dy
-        rem_wheel = wheel
+        clamped_dx = max(-127, min(127, dx))
+        clamped_dy = max(-127, min(127, dy))
+        clamped_wheel = max(-127, min(127, wheel))
+        report = struct.pack("<BBbbb", 0x02, buttons & 0x07, clamped_dx, clamped_dy, clamped_wheel)
+        payload = b"\xa1" + report
 
-        # Burst: send multiple ±127 reports until delta is consumed
         try:
-            while rem_dx or rem_dy or rem_wheel:
-                clamped_dx = max(-127, min(127, rem_dx))
-                clamped_dy = max(-127, min(127, rem_dy))
-                clamped_wheel = max(-127, min(127, rem_wheel))
-                report = struct.pack("<BBbbb", 0x02, btn, clamped_dx, clamped_dy, clamped_wheel)
-                payload = b"\xa1" + report
-                try:
-                    os.write(fd, payload)
-                except BlockingIOError:
-                    # Buffer full — drop remainder (next frame brings fresh data)
-                    break
-                rem_dx -= clamped_dx
-                rem_dy -= clamped_dy
-                rem_wheel -= clamped_wheel
-                self._report_count += 1
-                if self._report_count <= 5 or self._report_count % 500 == 0:
-                    logger.info(
-                        "HID report #%d (mouse burst) (%d bytes): %s",
-                        self._report_count,
-                        len(payload),
-                        payload[:10].hex(),
-                    )
+            os.write(fd, payload)
+            self._report_count += 1
+            if self._report_count <= 5 or self._report_count % 500 == 0:
+                logger.info(
+                    "HID report #%d (mouse) (%d bytes): %s",
+                    self._report_count,
+                    len(payload),
+                    payload[:10].hex(),
+                )
+            return True
+        except BlockingIOError:
+            # Buffer full — drop this frame; next event brings fresh data
             return True
         except OSError as e:
             if e.errno == 11:  # EAGAIN
