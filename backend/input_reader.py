@@ -18,6 +18,7 @@ import fcntl
 import glob
 import logging
 import os
+import select
 import struct
 import subprocess
 import threading
@@ -414,6 +415,9 @@ class InputReader:
                     time.sleep(0.005)
             if got_data:
                 logger.info("Found Valve controller hidraw: %s", path)
+                # Switch from O_NONBLOCK (used for probe) to blocking I/O
+                flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                fcntl.fcntl(fd, fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
                 return fd, path
             os.close(fd)
             logger.debug("Skipping %s (no data in 100 ms)", path)
@@ -431,6 +435,9 @@ class InputReader:
                 if pattern.lower() in name.lower():
                     if _has_ev_abs(fd):
                         logger.info("Found evdev controller: %s at %s", name, path)
+                        # Switch from O_NONBLOCK (used for detection) to blocking I/O
+                        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                        fcntl.fcntl(fd, fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
                         return fd, path
                     break
             os.close(fd)
@@ -846,20 +853,34 @@ class InputReader:
             stop_event = threading.Event()
             self._device_swapped = False
 
+            def _put_report(data: bytes) -> None:
+                """Drop stale reports then enqueue newest. Runs in event loop."""
+                while not queue.empty():
+                    try:
+                        queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                queue.put_nowait(data)
+
             def _reader_thread(
                 fd_local: int = fd,
                 stop_local: threading.Event = stop_event,
                 queue_local: asyncio.Queue[bytes] = queue,
             ) -> None:
                 while not stop_local.is_set():
+                    # Use select() for low-latency blocking wait; timeout lets us
+                    # check stop_event periodically without busy-spinning.
+                    ready, _, _ = select.select([fd_local], [], [], 0.05)
+                    if not ready:
+                        continue
                     try:
                         data = os.read(fd_local, read_size)
                         if data:
-                            loop.call_soon_threadsafe(queue_local.put_nowait, data)
+                            loop.call_soon_threadsafe(_put_report, data)
                     except BlockingIOError:
-                        stop_local.wait(0.001)
+                        pass  # shouldn't happen with blocking fd, but handle gracefully
                     except OSError:
-                        loop.call_soon_threadsafe(queue_local.put_nowait, b"")
+                        loop.call_soon_threadsafe(_put_report, b"")
                         break
 
             thread = threading.Thread(target=_reader_thread, daemon=True, name="input-reader")

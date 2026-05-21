@@ -370,6 +370,7 @@ class TestInputReaderAsyncLifecycle:
              patch("backend.input_reader.os.open", return_value=42), \
              patch("backend.input_reader._get_device_name", return_value="Microsoft X-Box 360 pad"), \
              patch("backend.input_reader._has_ev_abs", return_value=True), \
+             patch("backend.input_reader.fcntl.fcntl"), \
              patch("backend.input_reader.os.close"):
             result = reader._find_evdev_device()
             assert result is not None
